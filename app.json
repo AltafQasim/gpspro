@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "GpsPro",
-    "slug": "GpsPro",
+    "slug": "gpspro",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -37,6 +37,13 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "01f2ce8e-5fc3-4b20-b08b-32f38a986dce"
+      }
+    },
+    "owner": "ak2424"
   }
 }

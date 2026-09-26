@@ -1,98 +1,308 @@
-import * as Device from 'expo-device';
-import { Platform, StyleSheet } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
+import React, { useState } from 'react';
+import {
+  Alert,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { AnimatedIcon } from '@/components/animated-icon';
-import { HintRow } from '@/components/hint-row';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { WebBadge } from '@/components/web-badge';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
+import { CoordinatesCard } from '@/components/marine/CoordinatesCard';
+import { useRouter } from 'expo-router';
+import { FeatureModal } from '@/components/marine/FeatureModal';
+import { NavGrid } from '@/components/marine/NavGrid';
+import { PremiumButton } from '@/components/marine/PremiumButton';
+import { SatelliteRadar } from '@/components/marine/SatelliteRadar';
+import { MarineFeatureId, Satellite } from '@/components/marine/types';
 
-function getDevMenuHint() {
-  if (Platform.OS === 'web') {
-    return <ThemedText type="small">use browser devtools</ThemedText>;
-  }
-  if (Device.isDevice) {
-    return (
-      <ThemedText type="small">
-        shake device or press <ThemedText type="code">m</ThemedText> in terminal
-      </ThemedText>
+export default function MarineHomeScreen() {
+  const router = useRouter();
+  const [nightMode, setNightMode] = useState<boolean>(false);
+  const [activeModal, setActiveModal] = useState<MarineFeatureId | 'satellite' | 'coordinates' | null>(null);
+  const [modalTitle, setModalTitle] = useState<string>('');
+  const [selectedSat, setSelectedSat] = useState<Satellite | null>(null);
+
+  // Marine Navigation State
+  const latitude = "N 20° 44.572'";
+  const longitude = "E 71° 04.313'";
+  const altitude = -53;
+  const accuracy = 3;
+  const usedSatellites = 33;
+  const visibleSatellites = 57;
+  const batteryPercent = 22;
+  const signalBars = 5;
+
+  const handlePressFeature = (id: MarineFeatureId, label: string) => {
+    if (id === 'compass') {
+      router.push('/compass');
+      return;
+    }
+    if (id === 'tide') {
+      router.push('/tide');
+      return;
+    }
+    if (id === 'waypoints') {
+      router.push('/waypoints');
+      return;
+    }
+    if (id === 'settings') {
+      router.push('/settings');
+      return;
+    }
+    if (id === 'map') {
+      router.push('/map');
+      return;
+    }
+    if (id === 'calendar') {
+      router.push('/calendar');
+      return;
+    }
+    if (id === 'track') {
+      router.push('/track');
+      return;
+    }
+    if (id === 'premium') {
+      router.push('/premium');
+      return;
+    }
+    if (id === 'weather') {
+      router.push('/weather');
+      return;
+    }
+    if (id === 'camera') {
+      router.push('/camera');
+      return;
+    }
+    setActiveModal(id);
+    setModalTitle(label);
+  };
+
+  const handleSelectSatellite = (sat: Satellite) => {
+    setSelectedSat(sat);
+    setActiveModal('satellite');
+    setModalTitle(`Satellite PRN #${sat.prn}`);
+  };
+
+  const handlePressCoordinates = () => {
+    setActiveModal('coordinates');
+    setModalTitle('Vessel GPS Coordinates');
+  };
+
+  const handlePressBattery = () => {
+    Alert.alert(
+      'Marine Power Status',
+      `Battery Level: ${batteryPercent}%\nStatus: Discharging\nBackup Marine VHF Radio Power: OK`,
+      [{ text: 'OK' }]
     );
-  }
-  const shortcut = Platform.OS === 'android' ? 'cmd+m (or ctrl+m)' : 'cmd+d';
+  };
+
+  const handlePressSignal = () => {
+    Alert.alert(
+      'GNSS Signal Health',
+      `Signal Status: 5/5 Bars (Excellent)\nCorrection: DGPS / WAAS Active\nHDOP: 0.8\nCEP Accuracy: ${accuracy} Meters`,
+      [{ text: 'OK' }]
+    );
+  };
+
+  const handleMarkWaypoint = () => {
+    Alert.alert(
+      'Fishing Spot Marked! ⚓',
+      `Saved waypoint at:\n${latitude}, ${longitude}\nDepth: 53m\nAdded to your Waypoints list.`,
+      [{ text: 'Done', onPress: () => setActiveModal(null) }]
+    );
+  };
+
+  const themeColors = nightMode
+    ? {
+        background: '#0D1117',
+        cardBg: '#161B22',
+        headerText: '#ECEFF1',
+        statusGreen: '#00E676',
+        toggleBg: 'rgba(255, 82, 82, 0.15)',
+        toggleBorder: '#FF5252',
+        toggleText: '#FF8A80',
+      }
+    : {
+        background: '#FFFFFF',
+        cardBg: '#F8FAFC',
+        headerText: '#1E293B',
+        statusGreen: '#00C853',
+        toggleBg: '#F1F5F9',
+        toggleBorder: '#CBD5E1',
+        toggleText: '#475569',
+      };
+
   return (
-    <ThemedText type="small">
-      press <ThemedText type="code">{shortcut}</ThemedText>
-    </ThemedText>
-  );
-}
+    <SafeAreaView
+      edges={['top', 'left', 'right', 'bottom']}
+      style={[styles.safeArea, { backgroundColor: themeColors.background }]}>
+      <StatusBar style={nightMode ? 'light' : 'dark'} />
 
-export default function HomeScreen() {
-  return (
-    <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>
-        <ThemedView style={styles.heroSection}>
-          <AnimatedIcon />
-          <ThemedText type="title" style={styles.title}>
-            Welcome to&nbsp;Expo
-          </ThemedText>
-        </ThemedView>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        bounces={false}>
+        {/* Top Control Bar (Night Mode toggle & Marine Fix Indicator) */}
+        <View style={styles.topControlBar}>
+          <TouchableOpacity
+            activeOpacity={0.7}
+            onPress={handlePressSignal}
+            style={styles.fixStatusBadge}>
+            <View style={[styles.statusDot, { backgroundColor: themeColors.statusGreen }]} />
+            <Text style={[styles.fixStatusText, { color: themeColors.headerText }]}>
+              3D DGPS FIX • 3m ACC
+            </Text>
+          </TouchableOpacity>
 
-        <ThemedText type="code" style={styles.code}>
-          get started
-        </ThemedText>
+          <View style={styles.topRightControls}>
+            <TouchableOpacity
+              activeOpacity={0.75}
+              onPress={() => router.push('/login')}
+              style={[
+                styles.loginToggleBtn,
+                {
+                  backgroundColor: themeColors.toggleBg,
+                  borderColor: themeColors.toggleBorder,
+                },
+              ]}>
+              <Text style={[styles.loginToggleText, { color: themeColors.toggleText }]}>
+                ⚓ LOGIN
+              </Text>
+            </TouchableOpacity>
 
-        <ThemedView type="backgroundElement" style={styles.stepContainer}>
-          <HintRow
-            title="Try editing"
-            hint={<ThemedText type="code">src/app/index.tsx</ThemedText>}
-          />
-          <HintRow title="Dev tools" hint={getDevMenuHint()} />
-          <HintRow
-            title="Fresh start"
-            hint={<ThemedText type="code">npm run reset-project</ThemedText>}
-          />
-        </ThemedView>
+            <TouchableOpacity
+              activeOpacity={0.75}
+              onPress={() => setNightMode(!nightMode)}
+              style={[
+                styles.nightToggleBtn,
+                {
+                  backgroundColor: themeColors.toggleBg,
+                  borderColor: themeColors.toggleBorder,
+                },
+              ]}>
+              <Text style={[styles.nightToggleText, { color: themeColors.toggleText }]}>
+                {nightMode ? '🌙 NIGHT' : '☀️ DAY'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
 
-        {Platform.OS === 'web' && <WebBadge />}
-      </SafeAreaView>
-    </ThemedView>
+        {/* 1. Satellite Skyplot Radar View */}
+        <SatelliteRadar
+          usedCount={usedSatellites}
+          visibleCount={visibleSatellites}
+          altitude={altitude}
+          accuracy={accuracy}
+          nightMode={nightMode}
+          onSelectSatellite={handleSelectSatellite}
+        />
+
+        {/* 2. Signal, Marine Coordinates & Battery Row */}
+        <CoordinatesCard
+          latitude={latitude}
+          longitude={longitude}
+          batteryPercent={batteryPercent}
+          signalBars={signalBars}
+          nightMode={nightMode}
+          onPressCoordinates={handlePressCoordinates}
+          onPressBattery={handlePressBattery}
+          onPressSignal={handlePressSignal}
+        />
+
+        {/* 3. 3x3 Marine Navigation Action Grid */}
+        <NavGrid
+          nightMode={nightMode}
+          onPressFeature={handlePressFeature}
+        />
+
+        {/* 4. Bottom Upgrade to Premium Button */}
+        <PremiumButton
+          nightMode={nightMode}
+          onPress={() => handlePressFeature('premium', 'Upgrade to Premium')}
+        />
+      </ScrollView>
+
+      {/* Interactive Feature Modal / Bottom Sheet */}
+      <FeatureModal
+        visible={activeModal !== null}
+        featureId={activeModal}
+        featureTitle={modalTitle}
+        selectedSat={selectedSat}
+        nightMode={nightMode}
+        onClose={() => {
+          setActiveModal(null);
+          setSelectedSat(null);
+        }}
+        onMarkWaypoint={handleMarkWaypoint}
+      />
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    flexDirection: 'row',
-  },
   safeArea: {
     flex: 1,
-    paddingHorizontal: Spacing.four,
+  },
+  scrollContent: {
     alignItems: 'center',
-    gap: Spacing.three,
-    paddingBottom: BottomTabInset + Spacing.three,
-    maxWidth: MaxContentWidth,
+    paddingBottom: Platform.OS === 'ios' ? 12 : 20,
   },
-  heroSection: {
+  topControlBar: {
+    width: '100%',
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    gap: Spacing.four,
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 4,
+    paddingBottom: 4,
   },
-  title: {
-    textAlign: 'center',
+  fixStatusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 12,
   },
-  code: {
-    textTransform: 'uppercase',
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
-  stepContainer: {
-    gap: Spacing.three,
-    alignSelf: 'stretch',
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.four,
-    borderRadius: Spacing.four,
+  fixStatusText: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  topRightControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  loginToggleBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  loginToggleText: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  nightToggleBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  nightToggleText: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.3,
   },
 });
