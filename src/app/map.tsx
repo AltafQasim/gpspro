@@ -19,6 +19,7 @@ import {
   calculateNavDistanceAndBearing,
 } from '@/services/gpsService';
 import { VoiceService } from '@/services/voiceService';
+import { SettingsStore } from '@/services/settingsStore';
 import {
   WaypointItem,
   getActiveTarget,
@@ -138,6 +139,15 @@ export default function MarineMapScreen() {
   // Animated heading for butter-smooth mobile sensor rotation
   const boatRotateAnim = useRef(new Animated.Value(0)).current;
   const currentHeadingRef = useRef<number>(0);
+
+  // Subscribe to SettingsStore for instant units and theme updates
+  const [, setSettingsTick] = useState<number>(0);
+  useEffect(() => {
+    const unsub = SettingsStore.subscribe(() => {
+      setSettingsTick((t) => t + 1);
+    });
+    return unsub;
+  }, []);
 
   // Continuous Smooth 2-Finger Pinch Zoom Animation
   const pinchScaleAnim = useRef(new Animated.Value(1)).current;

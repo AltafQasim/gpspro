@@ -32,6 +32,7 @@ import {
   formatNauticalLat,
   formatNauticalLon,
 } from '@/services/gpsService';
+import { SettingsStore } from '@/services/settingsStore';
 import { BackButton } from '@/components/ui/back-button';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -80,14 +81,14 @@ export default function CompassScreen() {
   const [heading, setHeading] = useState<number>(354);
   const [targetBearing, setTargetBearing] = useState<number>(135);
   const [isNavigating, setIsNavigating] = useState<boolean>(true);
-  const [isMuted, setIsMuted] = useState<boolean>(false);
+  const [isMuted, setIsMuted] = useState<boolean>(() => !SettingsStore.getSettings().voiceAnnounce);
   const [speedKnots, setSpeedKnots] = useState<number>(4.2);
-  const [nightMode, setNightMode] = useState<boolean>(false);
+  const [nightMode, setNightMode] = useState<boolean>(() => SettingsStore.isNightMode());
 
   // Target Information State
   const [targetName, setTargetName] = useState<string>('7ka cheo ram reef');
   const [targetCoords, setTargetCoords] = useState<string>("N 20° 43.945', E 71° 04.794'");
-  const [distanceNmi, setDistanceNmi] = useState<string>('1.82 Mi');
+  const [distanceNmi, setDistanceNmi] = useState<string>(() => SettingsStore.convertDistanceString('1.82 Mi'));
   const [showWaypointModal, setShowWaypointModal] = useState<boolean>(false);
   const [modalSearch, setModalSearch] = useState<string>('');
 
@@ -206,7 +207,7 @@ export default function CompassScreen() {
         setTargetName(newTarget.name);
         setTargetBearing(b);
         targetBearingRef.current = b;
-        setDistanceNmi(newTarget.distance);
+        setDistanceNmi(SettingsStore.convertDistanceString(newTarget.distance));
         setTargetCoords(
           `${newTarget.latDir} ${newTarget.latDeg}° ${newTarget.latMin}', ${newTarget.lonDir} ${newTarget.lonDeg}° ${newTarget.lonMin}'`
         );
@@ -221,6 +222,19 @@ export default function CompassScreen() {
         targetBearingRef.current = 0;
         setDistanceNmi('--');
         setTargetCoords('--');
+      }
+    });
+    return unsub;
+  }, []);
+
+  // Subscribe to SettingsStore for immediate app-wide settings updates
+  useEffect(() => {
+    const unsub = SettingsStore.subscribe((s) => {
+      setNightMode(SettingsStore.isNightMode());
+      setIsMuted(!s.voiceAnnounce);
+      const active = getActiveTarget();
+      if (active) {
+        setDistanceNmi(SettingsStore.convertDistanceString(active.distance));
       }
     });
     return unsub;
@@ -248,8 +262,9 @@ export default function CompassScreen() {
   // Live GPS Telemetry Update
   const handleLocationUpdate = (telemetry: LocationTelemetry) => {
     setHasGpsFix(true);
-    setCurrentPosLat(telemetry.latFormatted);
-    setCurrentPosLon(telemetry.lonFormatted);
+    const c = SettingsStore.formatCoordinates(telemetry.latitude, telemetry.longitude);
+    setCurrentPosLat(c.latFormatted);
+    setCurrentPosLon(c.lonFormatted);
     if (telemetry.speedKnots >= 0) {
       setSpeedKnots(telemetry.speedKnots);
     }
@@ -480,7 +495,11 @@ export default function CompassScreen() {
 
         <TouchableOpacity
           activeOpacity={0.75}
-          onPress={() => setNightMode(!nightMode)}
+          onPress={() => {
+            const next = !nightMode;
+            setNightMode(next);
+            SettingsStore.updateSettings({ theme: next ? 'dark' : 'light' });
+          }}
           style={[
             styles.nightToggle,
             {

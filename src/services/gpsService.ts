@@ -5,6 +5,8 @@ export interface LocationTelemetry {
   latitude: number;
   longitude: number;
   speedKnots: number;
+  altitude?: number;
+  accuracy?: number;
   latFormatted: string;
   lonFormatted: string;
 }
@@ -107,10 +109,15 @@ export class GpsService {
               ? parseFloat((loc.coords.speed * 1.94384).toFixed(1))
               : 0;
 
+          const altitude = loc.coords.altitude !== null ? Math.round(loc.coords.altitude) : undefined;
+          const accuracy = loc.coords.accuracy !== null ? Math.round(loc.coords.accuracy) : undefined;
+
           callback({
             latitude: lat,
             longitude: lon,
             speedKnots,
+            altitude,
+            accuracy,
             latFormatted: formatNauticalLat(lat),
             lonFormatted: formatNauticalLon(lon),
           });
@@ -130,10 +137,14 @@ export class GpsService {
               pos.coords.speed !== null && pos.coords.speed >= 0
                 ? parseFloat((pos.coords.speed * 1.94384).toFixed(1))
                 : 0;
+            const altitude = pos.coords.altitude !== null ? Math.round(pos.coords.altitude) : undefined;
+            const accuracy = pos.coords.accuracy !== null ? Math.round(pos.coords.accuracy) : undefined;
             callback({
               latitude: lat,
               longitude: lon,
               speedKnots,
+              altitude,
+              accuracy,
               latFormatted: formatNauticalLat(lat),
               lonFormatted: formatNauticalLon(lon),
             });

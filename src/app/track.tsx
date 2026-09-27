@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { BackButton } from '@/components/ui/back-button';
+import { SettingsStore } from '@/services/settingsStore';
 
 interface TrackItem {
   id: number;
@@ -48,6 +49,14 @@ export default function TrackRecorderScreen() {
   const router = useRouter();
 
   // State
+  const [, setSettingsTick] = useState<number>(0);
+  useEffect(() => {
+    const unsub = SettingsStore.subscribe(() => {
+      setSettingsTick((t) => t + 1);
+    });
+    return unsub;
+  }, []);
+
   const [selectedColor, setSelectedColor] = useState<string>('#81C784');
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [currentTrackName, setCurrentTrackName] = useState<string>('Track 3');
@@ -203,7 +212,7 @@ export default function TrackRecorderScreen() {
 
       {/* Screen Header */}
       <View style={styles.topNavRow}>
-        <BackButton showLabel={true} label="Home" />
+        <BackButton showLabel={false} />
 
         <Text style={styles.headerTitle}>TRACK RECORDER</Text>
 
@@ -291,7 +300,9 @@ export default function TrackRecorderScreen() {
         <View style={styles.savedTracksList}>
           {tracks.map((item) => (
             <View key={item.id} style={styles.trackCard}>
-              <Text style={styles.trackIdText}>ID: {item.id}</Text>
+              <Text style={styles.trackIdText}>
+                ID: {item.id} • {item.pointsCount} pts • {SettingsStore.formatDistance(item.distanceKm / 1.852)}
+              </Text>
               <Text style={styles.trackNameText}>Name: {item.name}</Text>
               <View style={styles.lineColorRow}>
                 <Text style={styles.lineColorLabel}>Line Color: </Text>

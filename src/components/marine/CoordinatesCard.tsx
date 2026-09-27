@@ -10,7 +10,9 @@ interface CoordinatesCardProps {
   latitude?: string;
   longitude?: string;
   batteryPercent?: number;
+  isCharging?: boolean;
   signalBars?: number;
+  networkType?: string;
   nightMode?: boolean;
   onPressCoordinates?: () => void;
   onPressBattery?: () => void;
@@ -20,8 +22,10 @@ interface CoordinatesCardProps {
 export const CoordinatesCard: React.FC<CoordinatesCardProps> = ({
   latitude = "N 20° 44.572'",
   longitude = "E 71° 04.313'",
-  batteryPercent = 22,
+  batteryPercent = 85,
+  isCharging = false,
   signalBars = 5,
+  networkType = '4G LTE',
   nightMode = false,
   onPressCoordinates,
   onPressBattery,
@@ -51,7 +55,7 @@ export const CoordinatesCard: React.FC<CoordinatesCardProps> = ({
 
   return (
     <View style={styles.container}>
-      {/* Left: Signal Bars */}
+      {/* Left: Signal Bars & Real Network Status */}
       <TouchableOpacity
         activeOpacity={0.7}
         onPress={onPressSignal}
@@ -75,9 +79,12 @@ export const CoordinatesCard: React.FC<CoordinatesCardProps> = ({
             );
           })}
         </View>
+        <Text style={[styles.networkLabel, { color: colors.subtext }]}>
+          {signalBars === 0 ? 'OFFLINE' : networkType}
+        </Text>
       </TouchableOpacity>
 
-      {/* Center: High Visibility GPS Coordinates */}
+      {/* Center: High Visibility Real Marine GPS Coordinates */}
       <TouchableOpacity
         activeOpacity={0.7}
         onPress={onPressCoordinates}
@@ -86,14 +93,17 @@ export const CoordinatesCard: React.FC<CoordinatesCardProps> = ({
         <Text style={[styles.coordText, { color: colors.text }]}>{longitude}</Text>
       </TouchableOpacity>
 
-      {/* Right: Battery Gauge */}
+      {/* Right: Real Battery Gauge & Percentage */}
       <TouchableOpacity
         activeOpacity={0.7}
         onPress={onPressBattery}
         style={styles.batteryContainer}>
-        <Text style={[styles.batteryText, { color: colors.text }]}>
-          {batteryPercent}%
-        </Text>
+        <View style={styles.batteryLabelRow}>
+          <Text style={[styles.batteryText, { color: colors.text }]}>
+            {batteryPercent}%
+          </Text>
+          {isCharging && <Text style={styles.chargingLightning}>⚡</Text>}
+        </View>
         <View style={styles.batteryWrapper}>
           <View
             style={[
@@ -137,6 +147,8 @@ const styles = StyleSheet.create({
   },
   signalTouchArea: {
     padding: 6,
+    alignItems: 'center',
+    minWidth: 54,
   },
   signalContainer: {
     flexDirection: 'row',
@@ -147,6 +159,12 @@ const styles = StyleSheet.create({
   signalBar: {
     width: 6,
     borderRadius: 2.5,
+  },
+  networkLabel: {
+    fontSize: 9.5,
+    fontWeight: '800',
+    marginTop: 3,
+    letterSpacing: 0.3,
   },
   coordinatesContainer: {
     alignItems: 'center',
@@ -165,10 +183,19 @@ const styles = StyleSheet.create({
     padding: 4,
     minWidth: 54,
   },
+  batteryLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    marginBottom: 3,
+  },
   batteryText: {
     fontSize: 13,
     fontWeight: '700',
-    marginBottom: 3,
+  },
+  chargingLightning: {
+    fontSize: 10,
+    color: '#FFB300',
   },
   batteryWrapper: {
     flexDirection: 'row',

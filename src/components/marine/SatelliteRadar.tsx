@@ -11,6 +11,8 @@ import { INITIAL_SATELLITES } from './satelliteData';
 import { Satellite } from './types';
 
 interface SatelliteRadarProps {
+  heading?: number;
+  satellites?: Satellite[];
   usedCount?: number;
   visibleCount?: number;
   altitude?: number;
@@ -22,7 +24,12 @@ interface SatelliteRadarProps {
 const RADAR_SIZE = 270;
 const RADAR_RADIUS = RADAR_SIZE / 2;
 
+// 12 Degree tick marks for authentic nautical compass ring
+const COMPASS_TICKS = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
+
 export const SatelliteRadar: React.FC<SatelliteRadarProps> = ({
+  heading = 0,
+  satellites = INITIAL_SATELLITES,
   usedCount = 33,
   visibleCount = 57,
   altitude = -53,
@@ -30,8 +37,12 @@ export const SatelliteRadar: React.FC<SatelliteRadarProps> = ({
   nightMode = false,
   onSelectSatellite,
 }) => {
-  // Radar beam rotation animation
+  // Radar sweep animation
   const spinAnim = useRef(new Animated.Value(0)).current;
+
+  // Real-time Smooth Compass Dial Rotation (Continuous shortest-angle spring)
+  const accumulatedRotationRef = useRef<number>(0);
+  const headingAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     const loop = Animated.loop(
@@ -46,15 +57,37 @@ export const SatelliteRadar: React.FC<SatelliteRadarProps> = ({
     return () => loop.stop();
   }, [spinAnim]);
 
+  useEffect(() => {
+    const normH = ((heading % 360) + 360) % 360;
+    // Compass dial rotates in opposite direction (-normH) so N points to real geographic North
+    const targetDialAngle = -normH;
+    const current = accumulatedRotationRef.current;
+    const diff = ((((targetDialAngle - (current % 360)) + 540) % 360) - 180);
+    const newAccumulated = current + diff;
+    accumulatedRotationRef.current = newAccumulated;
+
+    Animated.spring(headingAnim, {
+      toValue: newAccumulated,
+      friction: 12,
+      tension: 50,
+      useNativeDriver: true,
+    }).start();
+  }, [heading]);
+
   const spinInterpolation = spinAnim.interpolate({
     inputRange: [0, 1],
     outputRange: ['0deg', '360deg'],
   });
 
+  const dialRotationInterpolation = headingAnim.interpolate({
+    inputRange: [-36000, 36000],
+    outputRange: ['-36000deg', '36000deg'],
+  });
+
   // Calculate satellite x, y coordinates
   const getCoordinates = (azimuth: number, elevation: number) => {
     // 90 deg elevation is center, 0 deg is edge
-    const r = RADAR_RADIUS * ((90 - elevation) / 90) * 0.9;
+    const r = RADAR_RADIUS * ((90 - elevation) / 90) * 0.88;
     const rad = (azimuth * Math.PI) / 180;
     const x = RADAR_RADIUS + r * Math.sin(rad);
     const y = RADAR_RADIUS - r * Math.cos(rad);
@@ -64,163 +97,212 @@ export const SatelliteRadar: React.FC<SatelliteRadarProps> = ({
   const radarTheme = nightMode
     ? {
         border: 'rgba(255, 82, 82, 0.4)',
-        axis: 'rgba(255, 82, 82, 0.5)',
+        axis: 'rgba(255, 82, 82, 0.45)',
         cardinal: '#FF5252',
+        cardinalN: '#FF1744',
         zenith: '#FF1744',
         text: '#ECEFF1',
         subtext: '#90A4AE',
-        radarBg: 'rgba(20, 10, 15, 0.7)',
+        radarBg: 'rgba(20, 10, 15, 0.75)',
         beamColor: 'rgba(255, 82, 82, 0.15)',
+        tick: 'rgba(255, 82, 82, 0.35)',
+        lubber: '#FF1744',
       }
     : {
         border: '#80DEEA',
-        axis: '#78909C',
-        cardinal: '#263238',
-        zenith: '#212121',
+        axis: '#90A4AE',
+        cardinal: '#37474F',
+        cardinalN: '#D32F2F',
+        zenith: '#00838F',
         text: '#212121',
-        subtext: '#455A64',
-        radarBg: 'transparent',
+        subtext: '#546E7A',
+        radarBg: 'rgba(224, 247, 250, 0.25)',
         beamColor: 'rgba(77, 208, 225, 0.12)',
+        tick: 'rgba(120, 144, 156, 0.4)',
+        lubber: '#E53935',
       };
 
   return (
     <View style={styles.container}>
-      {/* Radar Circle */}
-      <View
-        style={[
-          styles.radarBox,
-          {
-            backgroundColor: radarTheme.radarBg,
-          },
-        ]}>
-        {/* Outer Circle (0° Horizon) */}
+      {/* Radar Box & Lubber Line Pointer */}
+      <View style={styles.radarContainerWrapper}>
+        {/* Vessel Heading Lubber Line (Top Reference Index) */}
+        <View style={styles.lubberLineContainer}>
+          <View style={[styles.lubberLine, { backgroundColor: radarTheme.lubber }]} />
+          <View style={[styles.lubberTriangle, { borderTopColor: radarTheme.lubber }]} />
+        </View>
+
+        {/* Radar Circular Frame */}
         <View
           style={[
-            styles.circle,
-            styles.outerCircle,
-            { borderColor: radarTheme.border },
-          ]}
-        />
-
-        {/* Middle Circle (45° Elevation) */}
-        <View
-          style={[
-            styles.circle,
-            styles.midCircle,
-            { borderColor: radarTheme.border },
-          ]}
-        />
-
-        {/* Inner Circle (70° Elevation) */}
-        <View
-          style={[
-            styles.circle,
-            styles.innerCircle,
-            { borderColor: radarTheme.border },
-          ]}
-        />
-
-        {/* Crosshair Axes */}
-        {/* Vertical Axis (N - S) */}
-        <View style={[styles.axisV, { backgroundColor: radarTheme.axis }]} />
-        {/* Horizontal Axis (W - E) */}
-        <View style={[styles.axisH, { backgroundColor: radarTheme.axis }]} />
-
-        {/* Cardinal Directions */}
-        <Text style={[styles.cardinalN, { color: radarTheme.cardinal }]}>N</Text>
-        <Text style={[styles.cardinalS, { color: radarTheme.cardinal }]}>S</Text>
-        <Text style={[styles.cardinalW, { color: radarTheme.cardinal }]}>W</Text>
-        <Text style={[styles.cardinalE, { color: radarTheme.cardinal }]}>E</Text>
-
-        {/* Radar Rotating Sweep Line */}
-        <Animated.View
-          style={[
-            styles.sweepContainer,
+            styles.radarBox,
             {
-              transform: [{ rotate: spinInterpolation }],
+              backgroundColor: radarTheme.radarBg,
             },
           ]}>
+          {/* Static Outer Circular Bezel */}
           <View
             style={[
-              styles.sweepLine,
-              {
-                backgroundColor: nightMode ? '#FF5252' : '#00BCD4',
-              },
+              styles.circle,
+              styles.outerCircle,
+              { borderColor: radarTheme.border },
             ]}
           />
+
+          {/* Middle Circle (45° Elevation) */}
           <View
             style={[
-              styles.sweepGlow,
-              {
-                borderRightColor: nightMode
-                  ? 'rgba(255, 82, 82, 0.25)'
-                  : 'rgba(77, 208, 225, 0.25)',
-              },
+              styles.circle,
+              styles.midCircle,
+              { borderColor: radarTheme.border },
             ]}
           />
-        </Animated.View>
 
-        {/* Zenith Center Point (Boat GPS Position) */}
-        <View style={[styles.zenithDot, { backgroundColor: radarTheme.zenith }]} />
+          {/* Inner Circle (70° Elevation) */}
+          <View
+            style={[
+              styles.circle,
+              styles.innerCircle,
+              { borderColor: radarTheme.border },
+            ]}
+          />
 
-        {/* Satellite Points */}
-        {INITIAL_SATELLITES.map((sat) => {
-          const { x, y } = getCoordinates(sat.azimuth, sat.elevation);
-          const isGps = sat.type === 'gps' || sat.used;
+          {/* FULLY ROTATING COMPASS DIAL (Crosshairs, Cardinals, Ticks & Satellite Skyplot) */}
+          <Animated.View
+            style={[
+              styles.rotatingDial,
+              {
+                transform: [{ rotate: dialRotationInterpolation }],
+              },
+            ]}>
+            {/* Crosshair Axes */}
+            <View style={[styles.axisV, { backgroundColor: radarTheme.axis }]} />
+            <View style={[styles.axisH, { backgroundColor: radarTheme.axis }]} />
 
-          return (
-            <TouchableOpacity
-              key={sat.id}
-              activeOpacity={0.7}
-              onPress={() => onSelectSatellite && onSelectSatellite(sat)}
+            {/* Dial Degree Ticks */}
+            {COMPASS_TICKS.map((deg) => {
+              const rad = (deg * Math.PI) / 180;
+              const r = RADAR_RADIUS - 7;
+              const x = RADAR_RADIUS + r * Math.sin(rad);
+              const y = RADAR_RADIUS - r * Math.cos(rad);
+              const isMajor = deg % 90 === 0;
+
+              return (
+                <View
+                  key={`tick-${deg}`}
+                  style={[
+                    styles.tickMark,
+                    {
+                      left: x - 1,
+                      top: y - 1,
+                      width: isMajor ? 3 : 2,
+                      height: isMajor ? 3 : 2,
+                      borderRadius: isMajor ? 1.5 : 1,
+                      backgroundColor: isMajor ? radarTheme.cardinal : radarTheme.tick,
+                    },
+                  ]}
+                />
+              );
+            })}
+
+            {/* Cardinal Direction Letters */}
+            <Text style={[styles.cardinalN, { color: radarTheme.cardinalN }]}>N</Text>
+            <Text style={[styles.cardinalS, { color: radarTheme.cardinal }]}>S</Text>
+            <Text style={[styles.cardinalW, { color: radarTheme.cardinal }]}>W</Text>
+            <Text style={[styles.cardinalE, { color: radarTheme.cardinal }]}>E</Text>
+
+            {/* Live Satellites Points - Rotating with True Azimuth */}
+            {satellites.map((sat) => {
+              const { x, y } = getCoordinates(sat.azimuth, sat.elevation);
+              const isGps = sat.type === 'gps' || sat.used;
+
+              return (
+                <TouchableOpacity
+                  key={`sat-${sat.id}-${sat.prn}`}
+                  activeOpacity={0.7}
+                  onPress={() => onSelectSatellite && onSelectSatellite(sat)}
+                  style={[
+                    styles.satItem,
+                    isGps ? styles.satCircle : styles.satSquare,
+                    {
+                      left: x - (isGps ? 9 : 8),
+                      top: y - (isGps ? 9 : 8),
+                      backgroundColor: isGps
+                        ? nightMode
+                          ? '#00E676'
+                          : '#00E676'
+                        : nightMode
+                        ? '#2979FF'
+                        : '#2979FF',
+                    },
+                  ]}>
+                  <Text
+                    style={[
+                      styles.satText,
+                      {
+                        color: isGps ? '#052e16' : '#ffffff',
+                        fontWeight: '700',
+                      },
+                    ]}>
+                    {sat.prn}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </Animated.View>
+
+          {/* Radar Rotating Sweep Line Animation */}
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.sweepContainer,
+              {
+                transform: [{ rotate: spinInterpolation }],
+              },
+            ]}>
+            <View
               style={[
-                styles.satItem,
-                isGps ? styles.satCircle : styles.satSquare,
+                styles.sweepLine,
                 {
-                  left: x - (isGps ? 9 : 8),
-                  top: y - (isGps ? 9 : 8),
-                  backgroundColor: isGps
-                    ? nightMode
-                      ? '#00E676'
-                      : '#00E676'
-                    : nightMode
-                    ? '#2979FF'
-                    : '#2979FF',
+                  backgroundColor: nightMode ? '#FF5252' : '#00BCD4',
                 },
-              ]}>
-              <Text
-                style={[
-                  styles.satText,
-                  {
-                    color: isGps ? '#052e16' : '#ffffff',
-                    fontWeight: '700',
-                  },
-                ]}>
-                {sat.prn}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
+              ]}
+            />
+            <View
+              style={[
+                styles.sweepGlow,
+                {
+                  borderRightColor: nightMode
+                    ? 'rgba(255, 82, 82, 0.25)'
+                    : 'rgba(77, 208, 225, 0.25)',
+                },
+              ]}
+            />
+          </Animated.View>
+
+          {/* Zenith Center Point (Boat Position) */}
+          <View style={[styles.zenithDot, { backgroundColor: radarTheme.zenith }]} />
+        </View>
       </View>
 
-      {/* Telemetry Stats Bar matching screenshot */}
+      {/* Telemetry Stats Bar */}
       <View style={styles.statsContainer}>
         <View style={styles.statsRow}>
           <View style={styles.statGroup}>
             <Text style={[styles.statLabel, { color: radarTheme.text }]}>Used: </Text>
-            <Text style={[styles.statValueGreen]}>{usedCount}</Text>
+            <Text style={styles.statValueGreen}>{usedCount}</Text>
           </View>
 
           <View style={styles.statGroup}>
             <Text style={[styles.statLabel, { color: radarTheme.text }]}>Visible: </Text>
-            <Text style={[styles.statValueOrange]}>{visibleCount}</Text>
+            <Text style={styles.statValueOrange}>{visibleCount}</Text>
           </View>
         </View>
 
         <View style={styles.statsRow}>
           <View style={styles.statGroup}>
             <Text style={[styles.statSubText, { color: radarTheme.subtext }]}>
-              Alt: <Text style={styles.statSubBold}>{altitude} m</Text>
+              Alt: <Text style={styles.statSubBold}>{altitude > 0 ? `+${altitude}` : altitude} m</Text>
             </Text>
           </View>
 
@@ -241,11 +323,45 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     width: '100%',
   },
+  radarContainerWrapper: {
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 10,
+  },
+  lubberLineContainer: {
+    position: 'absolute',
+    top: -10,
+    alignItems: 'center',
+    zIndex: 30,
+  },
+  lubberTriangle: {
+    width: 0,
+    height: 0,
+    borderLeftWidth: 5,
+    borderRightWidth: 5,
+    borderTopWidth: 7,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+  },
+  lubberLine: {
+    width: 2,
+    height: 6,
+    borderRadius: 1,
+  },
   radarBox: {
     width: RADAR_SIZE,
     height: RADAR_SIZE,
     borderRadius: RADAR_SIZE / 2,
     position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  rotatingDial: {
+    position: 'absolute',
+    width: RADAR_SIZE,
+    height: RADAR_SIZE,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -269,21 +385,24 @@ const styles = StyleSheet.create({
   axisV: {
     position: 'absolute',
     width: 1,
-    height: RADAR_SIZE - 4,
-    top: 2,
+    height: RADAR_SIZE - 6,
+    top: 3,
     left: RADAR_RADIUS - 0.5,
   },
   axisH: {
     position: 'absolute',
     height: 1,
-    width: RADAR_SIZE - 4,
-    left: 2,
+    width: RADAR_SIZE - 6,
+    left: 3,
     top: RADAR_RADIUS - 0.5,
+  },
+  tickMark: {
+    position: 'absolute',
   },
   cardinalN: {
     position: 'absolute',
     top: 6,
-    fontWeight: '800',
+    fontWeight: '900',
     fontSize: 14,
     zIndex: 10,
   },
@@ -336,10 +455,10 @@ const styles = StyleSheet.create({
     opacity: 0.35,
   },
   zenithDot: {
-    width: 9,
-    height: 9,
-    borderRadius: 4.5,
-    zIndex: 20,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    zIndex: 25,
   },
   satItem: {
     position: 'absolute',
@@ -347,10 +466,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.2,
+    shadowOpacity: 0.25,
     shadowRadius: 1.5,
     elevation: 3,
-    zIndex: 15,
+    zIndex: 20,
   },
   satCircle: {
     width: 18,
@@ -368,7 +487,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   statsContainer: {
-    marginTop: 14,
+    marginTop: 12,
     alignItems: 'center',
     gap: 4,
   },
@@ -383,26 +502,26 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   statLabel: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '700',
     letterSpacing: 0.3,
   },
   statValueGreen: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '900',
     color: '#00C853',
   },
   statValueOrange: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '900',
     color: '#FF9100',
   },
   statSubText: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '500',
   },
   statSubBold: {
     fontWeight: '700',
-    fontSize: 15,
+    fontSize: 14,
   },
 });
