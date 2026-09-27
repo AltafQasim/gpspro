@@ -1,15 +1,44 @@
+import {
+  CompassGyroIcon,
+  ModernCloseIcon,
+  ModernLayersIcon,
+  ModernZoomInIcon,
+  ModernZoomOutIcon,
+  OfflineStorageIcon,
+  OrientationCompassIcon,
+  PrecisionCrosshairIcon,
+  RecordTrackIcon,
+  TargetBullseyeIcon,
+  ToolsConsoleIcon,
+  VoiceSpeakerIcon,
+  WaypointBeaconIcon,
+} from '@/components/marine/MapScreenIcons';
+import { BackButton } from '@/components/ui/back-button';
+import {
+  GpsService,
+  calculateNavDistanceAndBearing,
+} from '@/services/gpsService';
+import { VoiceService } from '@/services/voiceService';
+import {
+  WaypointItem,
+  getActiveTarget,
+  getWaypoints,
+  setActiveTarget,
+  subscribeActiveTarget,
+  subscribeWaypoints,
+} from '@/services/waypointStore';
+import { Image } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { Image } from 'expo-image';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Animated,
   Dimensions,
+  Easing,
   Modal,
   PanResponder,
   Platform,
-  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -17,14 +46,6 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import {
-  INITIAL_WAYPOINTS,
-  WaypointItem,
-  getActiveTarget,
-  getWaypoints,
-  setActiveTarget,
-} from '@/services/waypointStore';
-import { VoiceService } from '@/services/voiceService';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -44,10 +65,26 @@ interface TileInfo {
 // Convert Lat/Lon to World Mercator Coordinates at a given zoom level
 function latLonToWorld(lat: number, lon: number, zoom: number) {
   const scale = 256 * Math.pow(2, zoom);
-  const x = ((lon + 180) / 360) * scale;
-  const latRad = (lat * Math.PI) / 180;
+  const normLon = ((((lon + 180) % 360) + 360) % 360) - 180;
+  const x = ((normLon + 180) / 360) * scale;
+  const clampedLat = Math.max(-85.05112878, Math.min(85.05112878, lat));
+  const latRad = (clampedLat * Math.PI) / 180;
   const y = ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) * scale;
   return { x, y };
+}
+
+// Convert World Mercator Coordinates back to Lat/Lon at a given zoom level
+function worldToLatLon(x: number, y: number, zoom: number) {
+  const scale = 256 * Math.pow(2, zoom);
+  const lon = (x / scale) * 360 - 180;
+  const y2 = 1 - (2 * y) / scale;
+  const clampedY2 = Math.max(-1, Math.min(1, y2));
+  const latRad = Math.atan(Math.sinh(Math.PI * clampedY2));
+  const lat = (latRad * 180) / Math.PI;
+  return {
+    lat: Math.max(-85.0511, Math.min(85.0511, lat)),
+    lon: ((((lon + 180) % 360) + 360) % 360) - 180,
+  };
 }
 
 // Convert DMF Waypoint (Deg + Min) to Decimal Degrees
@@ -59,27 +96,83 @@ function waypointToDecimal(wp: WaypointItem) {
 
 export default function MarineMapScreen() {
   const router = useRouter();
+  const searchParams = useLocalSearchParams();
 
-  // Gujarat Coastal Marine Fishing Center (Diu / Veraval Deep Basin)
-  const [centerLat, setCenterLat] = useState<number>(20.7428);
-  const [centerLon, setCenterLon] = useState<number>(71.0718);
+  // Vessel GPS Location (Live boat position)
+  const [boatLat, setBoatLat] = useState<number>(20.7428);
+  const [boatLon, setBoatLon] = useState<number>(71.0718);
+
+  // Map Screen View Center (Geographic Coordinates)
+  const [mapCenter, setMapCenter] = useState<{ lat: number; lon: number }>({
+    lat: 20.7428,
+    lon: 71.0718,
+  });
+
+  // Zoom level: 0 to 20.
+  // Zoom 0 = entire planet Earth (full world view like Google Maps)
+  // Zoom 13 = local coastal fishing grounds
+  // Zoom 20 = pier/harbor detail
   const [zoom, setZoom] = useState<number>(13);
 
-  // Vessel Telemetry
-  const [speedKnots, setSpeedKnots] = useState<number>(4.2);
-  const [heading, setHeading] = useState<number>(352);
+  // Real-time drag delta in pixels during active drag
+  const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const mapCenterRef = useRef<{ lat: number; lon: number }>({ lat: 20.7428, lon: 71.0718 });
+  const zoomRef = useRef<number>(13);
+
+  useEffect(() => {
+    mapCenterRef.current = mapCenter;
+  }, [mapCenter]);
+
+  useEffect(() => {
+    zoomRef.current = zoom;
+  }, [zoom]);
+
+  // Live Vessel Telemetry from Mobile Sensors
+  const [speedKnots, setSpeedKnots] = useState<number>(0.0);
+  const [heading, setHeading] = useState<number>(0);
   const [distance, setDistance] = useState<number>(1.15);
   const [bearing, setBearing] = useState<number>(73);
+  const [latStr, setLatStr] = useState<string>("N 20° 44.572'");
+  const [lonStr, setLonStr] = useState<string>("E 71° 04.313'");
+
+  // Animated heading for butter-smooth mobile sensor rotation
+  const boatRotateAnim = useRef(new Animated.Value(0)).current;
+  const currentHeadingRef = useRef<number>(0);
+
+  // Continuous Smooth 2-Finger Pinch Zoom Animation
+  const pinchScaleAnim = useRef(new Animated.Value(1)).current;
+  const pinchStartDistRef = useRef<number | null>(null);
+  const currentPinchScaleRef = useRef<number>(1);
+  const isPinchingRef = useRef<boolean>(false);
+  const pinchStartZoomRef = useRef<number>(13);
+  const isZoomingRef = useRef<boolean>(false);
+  const lastTapRef = useRef<number>(0);
+
+  // Pulsing Target Beacon Animation
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const pulseOpacityAnim = useRef(new Animated.Value(0.8)).current;
+
+  // Floating Tools Animated Hide/Show State
+  const [toolsVisible, setToolsVisible] = useState<boolean>(true);
+  const toolsAnim = useRef(new Animated.Value(1)).current;
+
+  // Waypoint Card Slide-in Animation
+  const cardSlideAnim = useRef(new Animated.Value(0)).current;
 
   // Map Controls State
   const [activeLayer, setActiveLayer] = useState<MapLayerType>('openstreet');
   const [showLayerModal, setShowLayerModal] = useState<boolean>(false);
-  const [isTrackingOn, setIsTrackingOn] = useState<boolean>(true);
   const [isRecording, setIsRecording] = useState<boolean>(false);
-  const [isMagnetic, setIsMagnetic] = useState<boolean>(true);
   const [northUp, setNorthUp] = useState<boolean>(true);
-  const [toolbarsVisible, setToolbarsVisible] = useState<boolean>(true);
   const [weatherOverlay, setWeatherOverlay] = useState<boolean>(false);
+
+  // Recorded Breadcrumb Track History
+  const [trackHistory, setTrackHistory] = useState<Array<{ lat: number; lon: number }>>([
+    { lat: 20.7412, lon: 71.069 },
+    { lat: 20.7418, lon: 71.0702 },
+    { lat: 20.7424, lon: 71.0712 },
+    { lat: 20.7428, lon: 71.0718 },
+  ]);
 
   // Offline Tile Cache State
   const [showOfflineModal, setShowOfflineModal] = useState<boolean>(false);
@@ -88,73 +181,348 @@ export default function MarineMapScreen() {
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
   const [selectedSector, setSelectedSector] = useState<string>('Diu & Veraval Deep Basin');
 
-  // Selected Waypoint & Active Target
+  // Selected Waypoint (null by default — only shows card when user clicks a pin)
   const [selectedWaypoint, setSelectedWaypoint] = useState<WaypointItem | null>(null);
   const [activeTargetWp, setActiveTargetWp] = useState<WaypointItem | null>(null);
+  const [allWaypointsList, setAllWaypointsList] = useState<WaypointItem[]>(getWaypoints());
 
-  // Position formatted string matching screenshot
-  const latStr = "N 20° 44.572'";
-  const lonStr = "E 71° 04.313'";
+  // Toggle tools with smooth spring animation
+  const handleToggleTools = () => {
+    const nextVal = toolsVisible ? 0 : 1;
+    Animated.spring(toolsAnim, {
+      toValue: nextVal,
+      friction: 7,
+      tension: 40,
+      useNativeDriver: true,
+    }).start();
+    setToolsVisible(!toolsVisible);
+  };
 
-  // Map Pan Offset
-  const [panOffset, setPanOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-  const panStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  // Open Waypoint Card with smooth slide-up
+  const handleSelectWaypoint = (wp: WaypointItem) => {
+    setSelectedWaypoint(wp);
+    Animated.spring(cardSlideAnim, {
+      toValue: 1,
+      friction: 8,
+      tension: 45,
+      useNativeDriver: true,
+    }).start();
+    VoiceService.announceWaypoint(wp.name, wp.distance, wp.bearing);
+  };
 
-  // Pan gesture responder to drag map smoothly in all directions
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onPanResponderGrant: () => {
-        panStartRef.current = { ...panOffset };
-      },
-      onPanResponderMove: (_, gestureState) => {
-        setPanOffset({
-          x: panStartRef.current.x + gestureState.dx,
-          y: panStartRef.current.y + gestureState.dy,
-        });
-      },
-    })
-  ).current;
+  // Close Waypoint Card cleanly with smooth slide-down
+  const handleCloseWaypointCard = () => {
+    Animated.timing(cardSlideAnim, {
+      toValue: 0,
+      duration: 160,
+      useNativeDriver: true,
+    }).start(() => {
+      setSelectedWaypoint(null);
+    });
+  };
 
-  // Sync active target from global store
+  // Pulsing radar animation loop for active waypoint target
   useEffect(() => {
-    const curTarget = getActiveTarget();
-    if (curTarget) {
-      setActiveTargetWp(curTarget);
-      setBearing(parseInt(curTarget.bearing) || 73);
-      setDistance(parseFloat(curTarget.distance) || 1.15);
-    }
-  }, []);
+    const pulseLoop = Animated.loop(
+      Animated.sequence([
+        Animated.parallel([
+          Animated.timing(pulseAnim, {
+            toValue: 2.2,
+            duration: 1600,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseOpacityAnim, {
+            toValue: 0,
+            duration: 1600,
+            useNativeDriver: true,
+          }),
+        ]),
+        Animated.parallel([
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 0,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseOpacityAnim, {
+            toValue: 0.85,
+            duration: 0,
+            useNativeDriver: true,
+          }),
+        ]),
+      ])
+    );
+    pulseLoop.start();
+    return () => pulseLoop.stop();
+  }, [pulseAnim, pulseOpacityAnim]);
 
-  // Zoom In / Out
-  const handleZoomIn = () => {
-    if (zoom < 16) {
-      setZoom((prev) => prev + 1);
-      setPanOffset({ x: 0, y: 0 });
+  // Subscribe to waypoint store changes
+  useEffect(() => {
+    const unsubWp = subscribeWaypoints((list) => {
+      setAllWaypointsList(list);
+    });
+    const unsubTarget = subscribeActiveTarget((tgt) => {
+      setActiveTargetWp(tgt);
+      if (tgt) {
+        const wpDec = waypointToDecimal(tgt);
+        const navCalc = calculateNavDistanceAndBearing(
+          boatLat,
+          boatLon,
+          wpDec.lat,
+          wpDec.lon
+        );
+        setDistance(parseFloat(navCalc.distanceNmi) || 0);
+        setBearing(typeof navCalc.bearing === 'number' ? navCalc.bearing : (parseInt(tgt.bearing) || 0));
+      }
+    });
+    return () => {
+      unsubWp();
+      unsubTarget();
+    };
+  }, [boatLat, boatLon]);
+
+  // Safe initial target synchronization
+  const targetIdParam = typeof searchParams?.targetId === 'string' ? searchParams.targetId : undefined;
+  const targetNameParam = typeof searchParams?.targetName === 'string' ? searchParams.targetName : undefined;
+  const initialTargetSyncedRef = useRef(false);
+
+  useEffect(() => {
+    if (targetIdParam) {
+      const match = allWaypointsList.find(
+        (w) => w.id === targetIdParam || w.name === targetNameParam
+      );
+      if (match) {
+        setActiveTarget(match);
+      }
+    } else if (!initialTargetSyncedRef.current) {
+      initialTargetSyncedRef.current = true;
+      const curTarget = getActiveTarget();
+      if (curTarget) {
+        setActiveTargetWp(curTarget);
+      }
     }
+  }, [targetIdParam, targetNameParam, allWaypointsList]);
+
+  // Live GPS Sensor Integration with Gyroscope & Compass Heading
+  useEffect(() => {
+    GpsService.startHeadingTracking((headDeg) => {
+      setHeading(headDeg);
+      let diff = headDeg - (currentHeadingRef.current % 360);
+      if (diff > 180) diff -= 360;
+      if (diff < -180) diff += 360;
+      const targetAnimVal = currentHeadingRef.current + diff;
+      currentHeadingRef.current = targetAnimVal;
+
+      Animated.timing(boatRotateAnim, {
+        toValue: targetAnimVal,
+        duration: 250,
+        useNativeDriver: true,
+      }).start();
+    });
+
+    GpsService.startLocationTracking((loc) => {
+      setSpeedKnots(loc.speedKnots);
+      if (loc.latitude && loc.longitude) {
+        setBoatLat(loc.latitude);
+        setBoatLon(loc.longitude);
+        setLatStr(loc.latDmf);
+        setLonStr(loc.lonDmf);
+
+        if (isRecording) {
+          setTrackHistory((prev) => [
+            ...prev,
+            { lat: loc.latitude, lon: loc.longitude },
+          ]);
+        }
+      }
+
+      const currentTgt = getActiveTarget();
+      if (currentTgt && loc.latitude && loc.longitude) {
+        const wpDec = waypointToDecimal(currentTgt);
+        const navCalc = calculateNavDistanceAndBearing(
+          loc.latitude,
+          loc.longitude,
+          wpDec.lat,
+          wpDec.lon
+        );
+        setDistance(parseFloat(navCalc.distanceNmi) || 0);
+        setBearing(typeof navCalc.bearing === 'number' ? navCalc.bearing : 0);
+      }
+    });
+
+    return () => {
+      GpsService.stopHeadingTracking();
+      GpsService.stopLocationTracking();
+    };
+  }, [isRecording, boatRotateAnim]);
+
+  // Zoom In / Out Handlers (Full World 0 to Ultra Pier 20) - Direct, rock-solid, zero-bounce
+  const handleZoomIn = () => {
+    setZoom((prev) => Math.min(20, prev + 1));
   };
 
   const handleZoomOut = () => {
-    if (zoom > 9) {
-      setZoom((prev) => prev - 1);
-      setPanOffset({ x: 0, y: 0 });
+    setZoom((prev) => Math.max(0, prev - 1));
+  };
+
+  // Center on boat GPS position & zoom in to close-up navigation view (Direct, zero bounce)
+  const handleCenterOnBoat = () => {
+    setDragOffset({ x: 0, y: 0 });
+    setMapCenter({ lat: boatLat, lon: boatLon });
+    setZoom((curZoom) => (curZoom < 15 ? 15 : curZoom));
+  };
+
+  // Web Mouse Dragging Listeners
+  const isMouseDownRef = useRef(false);
+  const mouseStartRef = useRef({ x: 0, y: 0 });
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isMouseDownRef.current) return;
+      const dx = e.clientX - mouseStartRef.current.x;
+      const dy = e.clientY - mouseStartRef.current.y;
+      setDragOffset({ x: dx, y: dy });
+    };
+
+    const handleMouseUp = (e: MouseEvent) => {
+      if (!isMouseDownRef.current) return;
+      isMouseDownRef.current = false;
+      const dx = e.clientX - mouseStartRef.current.x;
+      const dy = e.clientY - mouseStartRef.current.y;
+      setDragOffset({ x: 0, y: 0 });
+
+      if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+        const curCenter = mapCenterRef.current;
+        const curZoom = zoomRef.current;
+        const centerWorld = latLonToWorld(curCenter.lat, curCenter.lon, curZoom);
+        const newCenter = worldToLatLon(centerWorld.x - dx, centerWorld.y - dy, curZoom);
+        setMapCenter(newCenter);
+      }
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
+
+  const handleWebMouseDown = (e: any) => {
+    if (Platform.OS !== 'web') return;
+    if (e.button !== 0) return;
+    isMouseDownRef.current = true;
+    mouseStartRef.current = { x: e.clientX, y: e.clientY };
+  };
+
+  const handleWebWheel = (e: any) => {
+    if (Platform.OS !== 'web') return;
+    if (e.deltaY < 0) {
+      handleZoomIn();
+    } else {
+      handleZoomOut();
     }
   };
 
-  // Center on boat GPS position
-  const handleCenterOnBoat = () => {
-    setPanOffset({ x: 0, y: 0 });
-    Alert.alert('Vessel Centered 🛥️', 'Chart locked on boat GPS: ' + latStr + ', ' + lonStr);
-  };
+  // Mobile PanResponder for Touch Drag & 2-Finger Pinch Zoom
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onStartShouldSetPanResponderCapture: () => false,
+      onMoveShouldSetPanResponder: (_, gestureState) => {
+        return Math.abs(gestureState.dx) > 3 || Math.abs(gestureState.dy) > 3;
+      },
+      onMoveShouldSetPanResponderCapture: (_, gestureState) => {
+        return Math.abs(gestureState.dx) > 3 || Math.abs(gestureState.dy) > 3;
+      },
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderGrant: (evt) => {
+        const touches = evt.nativeEvent.touches;
+        if (touches && touches.length === 2) {
+          isPinchingRef.current = true;
+          pinchStartZoomRef.current = zoomRef.current;
+          const dx = touches[0].pageX - touches[1].pageX;
+          const dy = touches[0].pageY - touches[1].pageY;
+          pinchStartDistRef.current = Math.hypot(dx, dy);
+          currentPinchScaleRef.current = 1;
+          pinchScaleAnim.setValue(1);
+        } else {
+          isPinchingRef.current = false;
+          pinchStartDistRef.current = null;
+          const now = Date.now();
+          if (now - lastTapRef.current < 280) {
+            handleZoomIn();
+          }
+          lastTapRef.current = now;
+        }
+      },
+      onPanResponderMove: (evt, gestureState) => {
+        const touches = evt.nativeEvent.touches;
+        if (touches && touches.length === 2) {
+          if (!isPinchingRef.current || !pinchStartDistRef.current) {
+            isPinchingRef.current = true;
+            pinchStartZoomRef.current = zoomRef.current;
+            const dx = touches[0].pageX - touches[1].pageX;
+            const dy = touches[0].pageY - touches[1].pageY;
+            pinchStartDistRef.current = Math.hypot(dx, dy);
+            currentPinchScaleRef.current = 1;
+            pinchScaleAnim.setValue(1);
+            return;
+          }
+          const dx = touches[0].pageX - touches[1].pageX;
+          const dy = touches[0].pageY - touches[1].pageY;
+          const dist = Math.hypot(dx, dy);
+          if (pinchStartDistRef.current > 0) {
+            const rawScale = dist / pinchStartDistRef.current;
+            const scale = Math.max(0.35, Math.min(3.5, rawScale));
+            currentPinchScaleRef.current = scale;
+            pinchScaleAnim.setValue(scale);
+          }
+        } else if (!isPinchingRef.current) {
+          setDragOffset({ x: gestureState.dx, y: gestureState.dy });
+        }
+      },
+      onPanResponderRelease: (_, gestureState) => {
+        if (isPinchingRef.current && pinchStartDistRef.current) {
+          isPinchingRef.current = false;
+          const finalScale = currentPinchScaleRef.current;
+          const zoomChange = Math.log2(finalScale);
+          const zoomDelta = Math.round(zoomChange);
+          const startZ = pinchStartZoomRef.current;
+          const targetZoom = Math.min(20, Math.max(0, startZ + zoomDelta));
+
+          if (targetZoom !== startZ) {
+            setZoom(targetZoom);
+          }
+          currentPinchScaleRef.current = 1;
+          pinchScaleAnim.setValue(1);
+          pinchStartDistRef.current = null;
+        } else {
+          const dx = gestureState.dx;
+          const dy = gestureState.dy;
+          setDragOffset({ x: 0, y: 0 });
+          if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+            const curCenter = mapCenterRef.current;
+            const curZoom = zoomRef.current;
+            const centerWorld = latLonToWorld(curCenter.lat, curCenter.lon, curZoom);
+            const newCenter = worldToLatLon(centerWorld.x - dx, centerWorld.y - dy, curZoom);
+            setMapCenter(newCenter);
+          }
+        }
+      },
+    })
+  ).current;
 
   // Start / Stop Track Recording
   const handleToggleRecording = () => {
     if (!isRecording) {
       setIsRecording(true);
-      Alert.alert('Track Recording Started 🔴', 'Nautical voyage track is now recording with GPS breadcrumbs.');
+      Alert.alert('Voyage Recording Started 🔴', 'Nautical track recording with real-time GPS breadcrumbs.');
     } else {
       setIsRecording(false);
-      Alert.alert('Track Saved 💾', 'Recorded 4.8 nmi track saved to GPX files.');
+      Alert.alert('Track Saved 💾', `Recorded ${trackHistory.length} GPS checkpoints to marine log.`);
     }
   };
 
@@ -163,38 +531,37 @@ export default function MarineMapScreen() {
     const newWp: WaypointItem = {
       id: `wp-${Date.now()}`,
       name: `Mark #${Math.floor(Math.random() * 900 + 100)}`,
-      latDeg: '20',
-      latMin: '44.572',
-      latDir: 'N',
-      lonDeg: '71',
-      lonMin: '04.313',
-      lonDir: 'E',
+      latDeg: latStr.split(' ')[1]?.replace('°', '') || '20',
+      latMin: latStr.split(' ')[2]?.replace("'", '') || '44.572',
+      latDir: (latStr.split(' ')[0] as any) || 'N',
+      lonDeg: lonStr.split(' ')[1]?.replace('°', '') || '71',
+      lonMin: lonStr.split(' ')[2]?.replace("'", '') || '04.313',
+      lonDir: (lonStr.split(' ')[0] as any) || 'E',
       icon: '📍',
       distance: '0.00 Mi',
       bearing: '000°',
       createdAt: new Date().toISOString().split('T')[0],
     };
-    setSelectedWaypoint(newWp);
-    VoiceService.announceWaypoint(newWp.name, newWp.distance, newWp.bearing);
-    Alert.alert('Waypoint Marked! 📍', `Dropped "${newWp.name}" at boat location.`);
+    handleSelectWaypoint(newWp);
+    Alert.alert('Waypoint Marked! 📍', `Saved "${newWp.name}" at boat GPS coordinates.`);
   };
 
   // Offline Cache Downloader Simulation
   const handleStartOfflineDownload = () => {
     setIsDownloadingCache(true);
-    setDownloadProgress(10);
+    setDownloadProgress(15);
 
-    const step1 = setTimeout(() => setDownloadProgress(35), 600);
-    const step2 = setTimeout(() => setDownloadProgress(70), 1200);
+    const step1 = setTimeout(() => setDownloadProgress(45), 500);
+    const step2 = setTimeout(() => setDownloadProgress(80), 1000);
     const step3 = setTimeout(() => {
       setDownloadProgress(100);
       setIsDownloadingCache(false);
-      setCachedTileCount((prev) => prev + 86);
+      setCachedTileCount((prev) => prev + 96);
       Alert.alert(
         'Offline Cache Complete ✅',
-        `Successfully cached ${selectedSector} (${zoom} zoom levels). 100% offline navigation ready for deep sea!`
+        `Successfully cached nautical tiles for ${selectedSector} (${zoom} zoom). 100% offline navigation ready for deep sea!`
       );
-    }, 1900);
+    }, 1600);
 
     return () => {
       clearTimeout(step1);
@@ -203,38 +570,52 @@ export default function MarineMapScreen() {
     };
   };
 
-  // Compute Active Tile Grid around Center (3x3 grid)
-  const centerWorld = latLonToWorld(centerLat, centerLon, zoom);
-  const centerTileX = Math.floor(centerWorld.x / 256);
-  const centerTileY = Math.floor(centerWorld.y / 256);
+  // MATHEMATICALLY CONTINUOUS SLIPPY TILE & MERCATOR ENGINE
+  // Zoom 0 = whole world (1 tile). Zoom 19 = deepest server tile layer.
+  const effectiveZoom = Math.min(20, Math.max(0, zoom));
+  const tileZoom = Math.min(19, Math.floor(effectiveZoom));
+  const maxTilesAtZoom = Math.pow(2, tileZoom);
 
-  const tileOriginX = centerWorld.x % 256;
-  const tileOriginY = centerWorld.y % 256;
+  const centerWorld = latLonToWorld(mapCenter.lat, mapCenter.lon, tileZoom);
+  const activeCenterX = centerWorld.x - dragOffset.x;
+  const activeCenterY = centerWorld.y - dragOffset.y;
+
+  const centerTileX = Math.floor(activeCenterX / 256);
+  const centerTileY = Math.floor(activeCenterY / 256);
+
+  const offsetInsideTileX = activeCenterX - centerTileX * 256;
+  const offsetInsideTileY = activeCenterY - centerTileY * 256;
+
+  // Tile coverage buffer to ensure entire viewport is filled
+  const halfTilesX = Math.ceil(SCREEN_WIDTH / 256 / 2) + 2;
+  const halfTilesY = Math.ceil(SCREEN_HEIGHT / 256 / 2) + 2;
 
   const tiles: TileInfo[] = [];
-  for (let dx = -2; dx <= 2; dx++) {
-    for (let dy = -2; dy <= 2; dy++) {
-      const tileX = centerTileX + dx;
+  for (let dx = -halfTilesX; dx <= halfTilesX; dx++) {
+    for (let dy = -halfTilesY; dy <= halfTilesY; dy++) {
+      const rawTileX = centerTileX + dx;
+      const tileX = ((rawTileX % maxTilesAtZoom) + maxTilesAtZoom) % maxTilesAtZoom;
       const tileY = centerTileY + dy;
+      if (tileY < 0 || tileY >= maxTilesAtZoom) continue;
 
       let tileUrl = '';
       if (activeLayer === 'openstreet') {
-        tileUrl = `https://tile.openstreetmap.org/${zoom}/${tileX}/${tileY}.png`;
+        const sub = ['a', 'b', 'c'][Math.abs((tileX + tileY) % 3)];
+        tileUrl = `https://${sub}.tile.openstreetmap.org/${tileZoom}/${tileX}/${tileY}.png`;
       } else if (activeLayer === 'satellite') {
-        tileUrl = `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${zoom}/${tileY}/${tileX}`;
+        tileUrl = `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${tileZoom}/${tileY}/${tileX}`;
       } else {
-        // Nautical / Ocean Bathymetry layer
-        tileUrl = `https://services.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/${zoom}/${tileY}/${tileX}`;
+        tileUrl = `https://services.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/${tileZoom}/${tileY}/${tileX}`;
       }
 
-      const left = SCREEN_WIDTH / 2 - tileOriginX + dx * 256 + panOffset.x;
-      const top = SCREEN_HEIGHT / 2 - tileOriginY + dy * 256 + panOffset.y;
+      const left = SCREEN_WIDTH / 2 - offsetInsideTileX + dx * 256;
+      const top = SCREEN_HEIGHT / 2 - offsetInsideTileY + dy * 256;
 
       tiles.push({
-        key: `${zoom}-${tileX}-${tileY}-${activeLayer}`,
+        key: `${tileZoom}-${tileX}-${tileY}-${dx}-${dy}-${activeLayer}`,
         x: tileX,
         y: tileY,
-        z: zoom,
+        z: tileZoom,
         url: tileUrl,
         left,
         top,
@@ -242,52 +623,79 @@ export default function MarineMapScreen() {
     }
   }
 
-  // Vessel Screen Position (centered by default + panOffset)
-  const vesselScreenX = SCREEN_WIDTH / 2 + panOffset.x;
-  const vesselScreenY = SCREEN_HEIGHT / 2 + panOffset.y;
+  // Vessel Screen Position (Locks mathematically to boatLat / boatLon)
+  const boatWorld = latLonToWorld(boatLat, boatLon, tileZoom);
+  const vesselScreenX = SCREEN_WIDTH / 2 + (boatWorld.x - activeCenterX);
+  const vesselScreenY = SCREEN_HEIGHT / 2 + (boatWorld.y - activeCenterY);
 
-  // Waypoints Mathematical Pixel Placement
-  const allWaypoints = getWaypoints();
-  const plottedWaypoints = allWaypoints.map((wp) => {
+  // Plotted Waypoints
+  const plottedWaypoints = allWaypointsList.map((wp, index) => {
     const { lat, lon } = waypointToDecimal(wp);
-    const wpWorld = latLonToWorld(lat, lon, zoom);
-    const screenX = SCREEN_WIDTH / 2 + (wpWorld.x - centerWorld.x) + panOffset.x;
-    const screenY = SCREEN_HEIGHT / 2 + (wpWorld.y - centerWorld.y) + panOffset.y;
+    const wpWorld = latLonToWorld(lat, lon, tileZoom);
+    const screenX = SCREEN_WIDTH / 2 + (wpWorld.x - activeCenterX);
+    const screenY = SCREEN_HEIGHT / 2 + (wpWorld.y - activeCenterY);
     return {
       item: wp,
+      index,
       screenX,
       screenY,
     };
   });
 
+  // ONLY ACTIVE TARGET WAYPOINT NAVIGATION ROUTE (No background voyage routes)
+  const targetWpPlotted = plottedWaypoints.find(
+    (p) => activeTargetWp && (p.item.id === activeTargetWp.id || p.item.name === activeTargetWp.name)
+  );
+
+  let targetRouteLine: {
+    length: number;
+    angle: number;
+    midX: number;
+    midY: number;
+  } | null = null;
+
+  if (targetWpPlotted) {
+    const dx = targetWpPlotted.screenX - vesselScreenX;
+    const dy = targetWpPlotted.screenY - vesselScreenY;
+    const len = Math.hypot(dx, dy);
+    const ang = (Math.atan2(dy, dx) * 180) / Math.PI;
+    targetRouteLine = {
+      length: len,
+      angle: ang,
+      midX: (vesselScreenX + targetWpPlotted.screenX) / 2,
+      midY: (vesselScreenY + targetWpPlotted.screenY) / 2,
+    };
+  }
+
+  // Platform safe image headers
+  const imageHeaders = useMemo(() => {
+    if (Platform.OS === 'web') return undefined;
+    return {
+      'User-Agent': 'GpsProMarine/1.0.0 (Marine Navigation; contact@gpspro.app)',
+      Accept: 'image/png,image/webp,image/*;q=0.8',
+    };
+  }, []);
+
   return (
     <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={styles.container}>
-      <StatusBar style="dark" />
+      <StatusBar style="dark" animated={true} />
 
       {/* 1. TOP HEADER BAR */}
       <View style={styles.topHeaderBar}>
-        <TouchableOpacity
-          activeOpacity={0.7}
-          onPress={() => router.back()}
-          style={styles.backButton}>
-          <Text style={styles.backArrow}>‹</Text>
-          <Text style={styles.backText}>Home</Text>
-        </TouchableOpacity>
+        <BackButton showLabel={true} label="Home" />
 
         {/* Marine Map Title with Layer Pill */}
         <TouchableOpacity
           activeOpacity={0.8}
           onPress={() => setShowLayerModal(true)}
           style={styles.layerSelectorBadge}>
-          <Text style={styles.layerSelectorIcon}>
-            {activeLayer === 'openstreet' ? '🗺️' : activeLayer === 'satellite' ? '🛰️' : '⚓'}
-          </Text>
+          <ModernLayersIcon size={18} color="#0D47A1" />
           <Text style={styles.layerSelectorText}>
             {activeLayer === 'openstreet'
               ? 'OpenStreetMap'
               : activeLayer === 'satellite'
               ? 'Satellite Map'
-              : 'Google Nautical'}
+              : 'Nautical Bathymetry'}
           </Text>
           <Text style={styles.layerDropdownArrow}>▼</Text>
         </TouchableOpacity>
@@ -298,34 +706,31 @@ export default function MarineMapScreen() {
           onPress={() => setShowOfflineModal(true)}
           style={styles.offlineStatusPill}>
           <View style={styles.offlineDot} />
-          <Text style={styles.offlineStatusText}>{cachedTileCount} Tiles 💾</Text>
+          <Text style={styles.offlineStatusText}>{cachedTileCount} Tiles</Text>
+          <OfflineStorageIcon size={14} color="#047857" />
         </TouchableOpacity>
       </View>
 
-      {/* 2. TOP 4 HUD METRIC CARDS (Matching Screenshot with Modern Polish) */}
+      {/* 2. TOP 4 HUD METRIC CARDS (Fixed height, perfectly stable) */}
       <View style={styles.hudRow}>
-        {/* Speed */}
         <View style={styles.hudCard}>
-          <Text style={styles.hudLabel}>SPEED (KN)</Text>
-          <Text style={styles.hudValue}>{speedKnots.toFixed(2)}</Text>
+          <Text style={styles.hudLabel} numberOfLines={1}>SPEED (KN)</Text>
+          <Text style={styles.hudValue} numberOfLines={1}>{speedKnots.toFixed(2)}</Text>
         </View>
 
-        {/* Distance */}
         <View style={styles.hudCard}>
-          <Text style={styles.hudLabel}>DISTANCE</Text>
-          <Text style={styles.hudValue}>{activeTargetWp ? `${distance.toFixed(2)} mi` : '--'}</Text>
+          <Text style={styles.hudLabel} numberOfLines={1}>DISTANCE</Text>
+          <Text style={styles.hudValue} numberOfLines={1}>{activeTargetWp ? `${distance.toFixed(2)} mi` : '--'}</Text>
         </View>
 
-        {/* Bearing */}
         <View style={styles.hudCard}>
-          <Text style={styles.hudLabel}>BEARING</Text>
-          <Text style={styles.hudValue}>{activeTargetWp ? `${bearing}°` : '000°'}</Text>
+          <Text style={styles.hudLabel} numberOfLines={1}>BEARING</Text>
+          <Text style={styles.hudValue} numberOfLines={1}>{activeTargetWp ? `${bearing ?? 0}°` : '000°'}</Text>
         </View>
 
-        {/* Heading */}
         <View style={styles.hudCard}>
-          <Text style={styles.hudLabel}>HEADING</Text>
-          <Text style={styles.hudValue}>{heading.toString().padStart(3, '0')}°</Text>
+          <Text style={styles.hudLabel} numberOfLines={1}>HEADING</Text>
+          <Text style={styles.hudValue} numberOfLines={1}>{heading.toString().padStart(3, '0')}°</Text>
         </View>
       </View>
 
@@ -340,422 +745,639 @@ export default function MarineMapScreen() {
         </View>
       </View>
 
-      {/* 4. MAIN MAP CANVAS (REAL TILES + ACCURATE WAYPOINTS + DRAG GESTURE) */}
-      <View style={styles.mapCanvasWrapper} {...panResponder.panHandlers}>
-        {/* Dynamic Slippy Map Tiles Layer with 100% Offline Disk Caching */}
-        {tiles.map((tile) => (
-          <Image
-            key={tile.key}
-            source={{ uri: tile.url }}
-            cachePolicy="disk"
-            style={[styles.mapTile, { left: tile.left, top: tile.top }]}
-          />
-        ))}
-
-        {/* Nautical Shipping Channel Corridor Overlay */}
-        <View
+      {/* 4. MAIN MAP CANVAS (UNLIMITED ZOOM 0-20 • SMOOTH DRAG PAN • PINCH & WHEEL ZOOM) */}
+      <View
+        style={[
+          styles.mapCanvasWrapper,
+          activeLayer === 'satellite'
+            ? { backgroundColor: '#0B192C' }
+            : activeLayer === 'nautical'
+            ? { backgroundColor: '#BFE5EC' }
+            : { backgroundColor: '#AAD3DF' },
+        ]}
+        {...panResponder.panHandlers}
+        {...(Platform.OS === 'web'
+          ? {
+              onMouseDown: handleWebMouseDown,
+              onWheel: handleWebWheel,
+            }
+          : {})}>
+        
+        {/* Unified Hardware-Accelerated Dynamic Map Canvas (Tiles + Waypoints + Vessel + Routes all scale together!) */}
+        <Animated.View
           style={[
-            styles.shippingLaneLine,
+            styles.mapContentLayer,
             {
-              left: vesselScreenX - 60,
-              top: vesselScreenY - 140,
-              transform: [{ rotate: '38deg' }],
+              transform: [
+                { scale: pinchScaleAnim },
+                !northUp
+                  ? {
+                      rotate: boatRotateAnim.interpolate({
+                        inputRange: [-360000, 360000],
+                        outputRange: ['360000deg', '-360000deg'],
+                      }),
+                    }
+                  : { rotate: '0deg' },
+              ],
             },
           ]}
-        />
+          pointerEvents="box-none">
+          
+          {/* Dynamic Slippy Map Tiles Layer (Instant loading transition=0, zero bounce) */}
+          <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
+            {tiles.map((tile) => (
+              <Image
+                key={tile.key}
+                source={{
+                  uri: tile.url,
+                  headers: imageHeaders,
+                }}
+                cachePolicy="disk"
+                transition={0}
+                style={[
+                  styles.mapTile,
+                  {
+                    left: tile.left,
+                    top: tile.top,
+                  },
+                ]}
+                contentFit="cover"
+              />
+            ))}
+          </View>
+          
+          {/* Recorded GPS Breadcrumbs Trail */}
+          {trackHistory.map((pt, i) => {
+            const ptWorld = latLonToWorld(pt.lat, pt.lon, tileZoom);
+            const ptX = SCREEN_WIDTH / 2 + (ptWorld.x - activeCenterX);
+            const ptY = SCREEN_HEIGHT / 2 + (ptWorld.y - activeCenterY);
+            return (
+              <View
+                key={`track-${i}`}
+                style={[styles.breadcrumbDot, { left: ptX - 3, top: ptY - 3 }]}
+                pointerEvents="none"
+              />
+            );
+          })}
 
-        {/* Bearing Line to Active Waypoint Target (Red Dotted Ray) */}
-        {activeTargetWp && (
-          <View
+          {/* ONLY ACTIVE WAYPOINT NAVIGATION ROUTE LINE (Vessel to Target) */}
+          {targetRouteLine && targetWpPlotted && (
+            <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
+              {/* Outer Glow Route Line */}
+              <View
+                style={[
+                  styles.routeOuterGlow,
+                  {
+                    left: targetRouteLine.midX - targetRouteLine.length / 2,
+                    top: targetRouteLine.midY - 4,
+                    width: targetRouteLine.length,
+                    transform: [{ rotate: `${targetRouteLine.angle}deg` }],
+                  },
+                ]}
+              />
+
+              {/* Vibrant Core Navigation Course Line */}
+              <View
+                style={[
+                  styles.routeCoreLine,
+                  {
+                    left: targetRouteLine.midX - targetRouteLine.length / 2,
+                    top: targetRouteLine.midY - 1.75,
+                    width: targetRouteLine.length,
+                    transform: [{ rotate: `${targetRouteLine.angle}deg` }],
+                  },
+                ]}
+              />
+
+              {/* Floating Route Midpoint Course Badge */}
+              {targetRouteLine.length > 80 && (
+                <View
+                  style={[
+                    styles.routeBadgePill,
+                    {
+                      left: targetRouteLine.midX - 60,
+                      top: targetRouteLine.midY - 13,
+                    },
+                  ]}>
+                  <Text style={styles.routeBadgeText}>
+                    {distance.toFixed(2)} Mi • {bearing ?? 0}°
+                  </Text>
+                </View>
+              )}
+
+              {/* Pulsing Radar Beacon Ring around Target Waypoint */}
+              <Animated.View
+                style={[
+                  styles.targetPulseCircle,
+                  {
+                    left: targetWpPlotted.screenX - 24,
+                    top: targetWpPlotted.screenY - 24,
+                    transform: [{ scale: pulseAnim }],
+                    opacity: pulseOpacityAnim,
+                  },
+                ]}
+              />
+            </View>
+          )}
+
+          {/* ALL MATHEMATICALLY ACCURATE WAYPOINTS PLOTTED ON MAP */}
+          {plottedWaypoints.map(({ item, screenX, screenY, index }) => {
+            const isTarget = activeTargetWp?.name === item.name || activeTargetWp?.id === item.id;
+            const isSelected = selectedWaypoint?.id === item.id;
+
+            return (
+              <TouchableOpacity
+                key={item.id}
+                activeOpacity={0.8}
+                onPress={() => handleSelectWaypoint(item)}
+                style={[
+                  styles.waypointPinWrap,
+                  { left: screenX - 16, top: screenY - 32 },
+                  isSelected && styles.waypointPinSelected,
+                ]}>
+                {/* Waypoint Pin Head */}
+                <View
+                  style={[
+                    styles.waypointBeacon,
+                    isTarget && styles.waypointBeaconTarget,
+                    isSelected && styles.waypointBeaconSelected,
+                  ]}>
+                  <Text style={styles.waypointBeaconText}>{index + 1}</Text>
+                </View>
+                {/* Pointing Needle Tip */}
+                <View
+                  style={[
+                    styles.waypointNeedleTip,
+                    isTarget && styles.needleTipTarget,
+                    isSelected && styles.needleTipSelected,
+                  ]}
+                />
+                {/* Waypoint Name Pill */}
+                <View style={[styles.waypointPillBox, isTarget && styles.waypointPillBoxTarget]}>
+                  <Text style={styles.waypointPillText} numberOfLines={1}>
+                    {item.name}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            );
+          })}
+
+          {/* GPS FISHING VESSEL MARKER */}
+          <Animated.View
             style={[
-              styles.bearingRayLine,
+              styles.boatMarkerWrap,
               {
-                left: vesselScreenX,
-                top: vesselScreenY,
-                transform: [{ rotate: `${bearing}deg` }],
+                left: vesselScreenX - 24,
+                top: vesselScreenY - 24,
+                transform: [
+                  {
+                    rotate: boatRotateAnim.interpolate({
+                      inputRange: [-360000, 360000],
+                      outputRange: ['-360000deg', '360000deg'],
+                    }),
+                  },
+                ],
               },
-            ]}
-          />
-        )}
-
-        {/* ALL 100% MATHEMATICALLY ACCURATE WAYPOINTS PLOTTED ON MAP */}
-        {plottedWaypoints.map(({ item, screenX, screenY }) => {
-          const isTarget = activeTargetWp?.name === item.name;
-          const isSelected = selectedWaypoint?.id === item.id;
-
-          return (
+            ]}>
             <TouchableOpacity
-              key={item.id}
-              activeOpacity={0.8}
-              onPress={() => {
-                setSelectedWaypoint(item);
-                VoiceService.announceWaypoint(item.name, item.distance, item.bearing);
-              }}
-              style={[
-                styles.waypointPinWrap,
-                { left: screenX - 16, top: screenY - 32 },
-                isSelected && styles.waypointPinSelected,
-              ]}>
-              {/* Waypoint Pin Head */}
-              <View style={[styles.waypointBeacon, isTarget && styles.waypointBeaconTarget]}>
-                <Text style={styles.waypointBeaconIcon}>{item.icon || '📍'}</Text>
-              </View>
-              {/* Pointing Needle Tip */}
-              <View style={[styles.waypointNeedleTip, isTarget && styles.needleTipTarget]} />
-              {/* Waypoint Name Pill */}
-              <View style={styles.waypointPillBox}>
-                <Text style={styles.waypointPillText} numberOfLines={1}>
-                  {item.name}
-                </Text>
+              activeOpacity={0.85}
+              onPress={handleCenterOnBoat}
+              style={styles.boatTouchInner}>
+              <View style={styles.radarCone} />
+              <View style={styles.bowHeadingLine} />
+
+              <View style={styles.boatHull}>
+                <View style={styles.boatBowTriangle} />
+                <View style={styles.boatDeck} />
+                <View style={styles.boatCenterPip}>
+                  <View style={styles.boatInnerDot} />
+                </View>
               </View>
             </TouchableOpacity>
-          );
-        })}
-
-        {/* GPS FISHING VESSEL MARKER */}
-        <TouchableOpacity
-          activeOpacity={0.85}
-          onPress={handleCenterOnBoat}
-          style={[
-            styles.boatMarkerWrap,
-            {
-              left: vesselScreenX - 22,
-              top: vesselScreenY - 22,
-              transform: [{ rotate: `${heading}deg` }],
-            },
-          ]}>
-          {/* Forward Radar Sweep Cone */}
-          <View style={styles.radarCone} />
-          {/* Boat Hull Shape */}
-          <View style={styles.boatHull}>
-            {/* Red Bow Arrow (Points in Heading direction) */}
-            <View style={styles.boatBowRed} />
-            {/* Blue Stern */}
-            <View style={styles.boatSternBlue} />
-            {/* Center Anchor Pip */}
-            <View style={styles.boatCenterAnchor}>
-              <Text style={styles.boatAnchorText}>⚓</Text>
-            </View>
-          </View>
-        </TouchableOpacity>
+          </Animated.View>
+        </Animated.View>
 
         {/* Weather Banner (If active) */}
         {weatherOverlay && (
-          <View style={styles.weatherBannerBox}>
+          <View style={styles.weatherBannerBox} pointerEvents="none">
             <Text style={styles.weatherBannerText}>
               🌦️ Swell: 1.1 m • Wind: 11 kn NW • Baro: 1013 hPa (Arabian Sea Safe)
             </Text>
           </View>
         )}
 
-        {/* 5. FLOATING TOOLBARS (LATEST 2026 MODERN ICONS) */}
-        {toolbarsVisible ? (
-          <>
-            {/* LEFT TOOLBAR */}
-            <View style={styles.leftToolbar}>
-              {/* Hide Button */}
-              <TouchableOpacity
-                onPress={() => setToolbarsVisible(false)}
-                style={styles.toolBtnPill}>
-                <Text style={styles.toolBtnText}>Hide</Text>
-              </TouchableOpacity>
-
-              {/* Record Track Button */}
-              <TouchableOpacity
-                onPress={handleToggleRecording}
-                style={[styles.toolBtnCircleOrange, isRecording && styles.toolBtnCircleOrangeActive]}>
-                <Text style={styles.toolBtnPlayIcon}>{isRecording ? '⏹' : '▷'}</Text>
-              </TouchableOpacity>
-
-              {/* Center on Boat Button */}
-              <TouchableOpacity
-                onPress={handleCenterOnBoat}
-                style={styles.toolBtnSquare}>
-                <Text style={styles.toolBtnSquareIcon}>✛</Text>
-              </TouchableOpacity>
-
-              {/* Compass Screen Shortcut */}
-              <TouchableOpacity
-                onPress={() => router.push('/compass')}
-                style={styles.toolBtnSquare}>
-                <Text style={styles.toolBtnSquareIcon}>🧭</Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* RIGHT TOOLBAR */}
-            <View style={styles.rightToolbar}>
-              {/* Layers Switcher Button */}
-              <TouchableOpacity
-                onPress={() => setShowLayerModal(true)}
-                style={styles.toolBtnSquare}>
-                <Text style={styles.toolBtnSquareIcon}>🗺️</Text>
-              </TouchableOpacity>
-
-              {/* Offline Pre-cache Button */}
-              <TouchableOpacity
-                onPress={() => setShowOfflineModal(true)}
-                style={styles.toolBtnSquare}>
-                <Text style={styles.toolBtnSquareIcon}>💾</Text>
-              </TouchableOpacity>
-
-              {/* N-UP / Head-Up Orientation */}
-              <TouchableOpacity
-                onPress={() => {
-                  setNorthUp(!northUp);
-                  Alert.alert('Chart Mode', northUp ? 'Head-Up (Rotates with Boat)' : 'North-Up (Top is North)');
-                }}
-                style={styles.toolBtnSquareGreen}>
-                <Text style={styles.toolBtnGreenText}>{northUp ? 'N-UP' : 'H-UP'}</Text>
-              </TouchableOpacity>
-
-              {/* Drop Waypoint Pin */}
-              <TouchableOpacity
-                onPress={handleDropWaypoint}
-                style={styles.toolBtnSquarePurple}>
-                <Text style={styles.toolBtnSquareIcon}>📍</Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* CENTER BOTTOM ZOOM CONTROLS (+ / -) */}
-            <View style={styles.centerZoomControls}>
-              <TouchableOpacity onPress={handleZoomOut} style={styles.zoomButton}>
-                <Text style={styles.zoomButtonText}>—</Text>
-              </TouchableOpacity>
-              <View style={styles.zoomLevelBadge}>
-                <Text style={styles.zoomLevelText}>Z{zoom}</Text>
-              </View>
-              <TouchableOpacity onPress={handleZoomIn} style={styles.zoomButton}>
-                <Text style={styles.zoomButtonText}>+</Text>
-              </TouchableOpacity>
-            </View>
-          </>
-        ) : (
+        {/* 5. BOTTOM-LEFT MINIMALIST ZOOM CONTROLS (ONLY + AND - BUTTONS, NO Z13 BADGE) */}
+        <View style={styles.bottomLeftZoomCapsule}>
           <TouchableOpacity
-            onPress={() => setToolbarsVisible(true)}
-            style={styles.unhideFloatingPill}>
-            <Text style={styles.unhideText}>Show Tools 👁️</Text>
+            activeOpacity={0.75}
+            onPress={handleZoomIn}
+            style={styles.zoomCapBtn}>
+            <ModernZoomInIcon size={24} color="#0D47A1" />
           </TouchableOpacity>
-        )}
+          <View style={styles.zoomDivider} />
+          <TouchableOpacity
+            activeOpacity={0.75}
+            onPress={handleZoomOut}
+            style={styles.zoomCapBtn}>
+            <ModernZoomOutIcon size={24} color="#0D47A1" />
+          </TouchableOpacity>
+        </View>
 
-        {/* 6. INTERACTIVE WAYPOINT INSPECTOR OVERLAY CARD */}
+        {/* 6. BOTTOM-RIGHT FLOATING COMMAND CONSOLE (HIGH-TECH FAB + ANIMATED DOCK) */}
+        <View style={styles.bottomRightDockWrapper} pointerEvents="box-none">
+          {/* Animated Tools Stack (Floats directly above the FAB) */}
+          <Animated.View
+            style={[
+              styles.bottomRightFloatingDock,
+              {
+                opacity: toolsAnim,
+                transform: [
+                  {
+                    translateY: toolsAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [240, 0],
+                    }),
+                  },
+                  {
+                    scale: toolsAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0.75, 1],
+                    }),
+                  },
+                ],
+              },
+            ]}
+            pointerEvents={toolsVisible ? 'auto' : 'none'}>
+            {/* 1. Orientation Toggle (N-UP / H-UP) */}
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => {
+                setNorthUp(!northUp);
+                Alert.alert(
+                  'Chart Orientation',
+                  northUp ? 'Head-Up Mode (Chart rotates with vessel heading)' : 'North-Up Mode (Top is True North)'
+                );
+              }}
+              style={styles.dockActionBtnBig}>
+              <OrientationCompassIcon size={24} northUp={northUp} />
+            </TouchableOpacity>
+
+            {/* 2. Layers Switcher */}
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => setShowLayerModal(true)}
+              style={styles.dockActionBtnBig}>
+              <ModernLayersIcon size={24} color="#0D47A1" />
+            </TouchableOpacity>
+
+            {/* 3. Center on Vessel */}
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={handleCenterOnBoat}
+              style={styles.dockActionBtnBig}>
+              <PrecisionCrosshairIcon size={24} color="#0D47A1" />
+            </TouchableOpacity>
+
+            {/* 4. Record Track */}
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={handleToggleRecording}
+              style={[styles.dockActionBtnBig, isRecording && styles.dockActionBtnRecording]}>
+              <RecordTrackIcon size={24} isRecording={isRecording} />
+            </TouchableOpacity>
+
+            {/* 5. Drop Mark / Pin */}
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={handleDropWaypoint}
+              style={styles.dockActionBtnBigPurple}>
+              <WaypointBeaconIcon size={24} color="#FFFFFF" />
+            </TouchableOpacity>
+
+            {/* 6. Compass Screen Shortcut */}
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => router.push('/compass')}
+              style={styles.dockActionBtnBig}>
+              <CompassGyroIcon size={24} />
+            </TouchableOpacity>
+
+            {/* 7. Offline Cache Manager */}
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => setShowOfflineModal(true)}
+              style={styles.dockActionBtnBig}>
+              <OfflineStorageIcon size={22} color="#0284C7" />
+            </TouchableOpacity>
+          </Animated.View>
+
+          {/* High-Tech Circular Floating Action Button (FAB) Toggle */}
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={handleToggleTools}
+            style={[styles.toolsFabButton, toolsVisible && styles.toolsFabButtonActive]}>
+            {toolsVisible ? (
+              <ModernCloseIcon size={20} color="#FFFFFF" />
+            ) : (
+              <ToolsConsoleIcon size={22} color="#FFFFFF" />
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {/* 7. INTERACTIVE WAYPOINT INSPECTOR OVERLAY CARD (ONLY SHOWN WHEN SELECTED) */}
         {selectedWaypoint && (
-          <View style={styles.waypointInspectorCard}>
+          <Animated.View
+            style={[
+              styles.waypointInspectorCard,
+              {
+                opacity: cardSlideAnim,
+                transform: [
+                  {
+                    translateY: cardSlideAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [240, 0],
+                    }),
+                  },
+                ],
+              },
+            ]}>
             <View style={styles.inspectorTopRow}>
               <View style={styles.inspectorTitleWrap}>
-                <Text style={styles.inspectorPinEmoji}>{selectedWaypoint.icon || '📍'}</Text>
-                <Text style={styles.inspectorNameText} numberOfLines={1}>
-                  {selectedWaypoint.name}
-                </Text>
+                <View style={styles.inspectorPinBadge}>
+                  <WaypointBeaconIcon size={20} color="#0D47A1" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.inspectorNameText} numberOfLines={1}>
+                    {selectedWaypoint.name}
+                  </Text>
+                  <Text style={styles.inspectorCoordsText}>
+                    {selectedWaypoint.latDir} {selectedWaypoint.latDeg}° {selectedWaypoint.latMin}&apos;   {selectedWaypoint.lonDir} {selectedWaypoint.lonDeg}° {selectedWaypoint.lonMin}&apos;
+                  </Text>
+                </View>
               </View>
+
+              {/* Working Close (✕) Button */}
               <TouchableOpacity
-                onPress={() => setSelectedWaypoint(null)}
+                activeOpacity={0.7}
+                onPress={handleCloseWaypointCard}
                 style={styles.inspectorCloseBtn}>
-                <Text style={styles.inspectorCloseText}>✕</Text>
+                <ModernCloseIcon size={16} color="#475569" />
               </TouchableOpacity>
             </View>
 
-            <Text style={styles.inspectorCoordsText}>
-              {selectedWaypoint.latDir} {selectedWaypoint.latDeg}° {selectedWaypoint.latMin}&apos;   {selectedWaypoint.lonDir} {selectedWaypoint.lonDeg}° {selectedWaypoint.lonMin}&apos;
-            </Text>
-
-            <View style={styles.inspectorMetaRow}>
-              <Text style={styles.inspectorMetaText}>Distance: {selectedWaypoint.distance}</Text>
-              <Text style={styles.inspectorMetaText}>•</Text>
-              <Text style={styles.inspectorMetaText}>Bearing: {selectedWaypoint.bearing}</Text>
+            <View style={styles.inspectorStatsRow}>
+              <View style={styles.inspectorStatBox}>
+                <Text style={styles.inspectorStatLbl}>DISTANCE</Text>
+                <Text style={styles.inspectorStatVal}>{selectedWaypoint.distance || '0.00 Mi'}</Text>
+              </View>
+              <View style={styles.inspectorStatBox}>
+                <Text style={styles.inspectorStatLbl}>BEARING</Text>
+                <Text style={styles.inspectorStatVal}>{selectedWaypoint.bearing || '000°'}</Text>
+              </View>
+              <View style={styles.inspectorStatBox}>
+                <Text style={styles.inspectorStatLbl}>CREATED</Text>
+                <Text style={[styles.inspectorStatVal, { fontSize: 11 }]}>
+                  {selectedWaypoint.createdAt || 'Recent'}
+                </Text>
+              </View>
             </View>
 
             <View style={styles.inspectorButtonsRow}>
-              {/* Steer on Compass Button */}
               <TouchableOpacity
                 activeOpacity={0.8}
                 onPress={() => {
                   setActiveTarget(selectedWaypoint);
-                  VoiceService.announceWaypoint(selectedWaypoint.name, selectedWaypoint.distance, selectedWaypoint.bearing);
+                  VoiceService.speak(`Navigating to ${selectedWaypoint.name}`);
+                  Alert.alert(
+                    'Target Activated 🎯',
+                    `Steering guidance set for "${selectedWaypoint.name}". Active navigation course line plotted.`
+                  );
+                }}
+                style={styles.inspectorTargetBtn}>
+                <TargetBullseyeIcon size={18} color="#FFFFFF" />
+                <Text style={styles.inspectorTargetBtnText}>Set Target</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => {
                   router.push({
                     pathname: '/compass',
                     params: {
                       targetId: selectedWaypoint.id,
                       targetName: selectedWaypoint.name,
-                      targetBearing: selectedWaypoint.bearing,
-                      targetDistance: selectedWaypoint.distance,
-                      targetLat: `${selectedWaypoint.latDir} ${selectedWaypoint.latDeg}° ${selectedWaypoint.latMin}'`,
-                      targetLon: `${selectedWaypoint.lonDir} ${selectedWaypoint.lonDeg}° ${selectedWaypoint.lonMin}'`,
+                      bearing: selectedWaypoint.bearing,
+                      distance: selectedWaypoint.distance,
                     },
                   });
                 }}
-                style={styles.inspectorTargetBtn}>
-                <Text style={styles.inspectorTargetBtnText}>🎯 Steer on Compass</Text>
+                style={styles.inspectorCompassBtn}>
+                <CompassGyroIcon size={18} />
+                <Text style={styles.inspectorCompassBtnText}>Compass</Text>
               </TouchableOpacity>
 
-              {/* Voice Announcement Button */}
               <TouchableOpacity
                 activeOpacity={0.8}
                 onPress={() => {
-                  VoiceService.announceWaypoint(selectedWaypoint.name, selectedWaypoint.distance, selectedWaypoint.bearing);
-                  Alert.alert(
-                    'Voice Announcement 🔊',
-                    `Spoken: ${selectedWaypoint.name}, Distance: ${selectedWaypoint.distance}, Bearing: ${selectedWaypoint.bearing}`
+                  VoiceService.announceWaypoint(
+                    selectedWaypoint.name,
+                    selectedWaypoint.distance,
+                    selectedWaypoint.bearing
                   );
                 }}
                 style={styles.inspectorVoiceBtn}>
-                <Text style={styles.inspectorVoiceBtnText}>🔊 Voice</Text>
+                <VoiceSpeakerIcon size={18} color="#FFFFFF" />
+                <Text style={styles.inspectorVoiceBtnText}>Voice</Text>
               </TouchableOpacity>
             </View>
-          </View>
+          </Animated.View>
         )}
       </View>
 
-      {/* 3-LAYER SELECTION MODAL */}
-      <Modal visible={showLayerModal} transparent animationType="fade">
+      {/* 8. LAYER SELECTOR MODAL */}
+      <Modal
+        visible={showLayerModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowLayerModal(false)}>
         <TouchableWithoutFeedback onPress={() => setShowLayerModal(false)}>
           <View style={styles.modalBackdrop}>
-            <View style={styles.modalCard}>
-              <Text style={styles.modalTitleText}>🗺️ Choose Marine Map Layer</Text>
-              <Text style={styles.modalSubtitleText}>
-                All loaded tiles are automatically stored offline for sea navigation without internet.
-              </Text>
-
-              {/* Layer 1: OpenStreetMap */}
-              <TouchableOpacity
-                activeOpacity={0.8}
-                onPress={() => {
-                  setActiveLayer('openstreet');
-                  setShowLayerModal(false);
-                }}
-                style={[
-                  styles.layerOptionRow,
-                  activeLayer === 'openstreet' && styles.layerOptionRowActive,
-                ]}>
-                <Text style={styles.layerOptionIcon}>🗺️</Text>
-                <View style={styles.layerOptionInfo}>
-                  <Text style={styles.layerOptionTitle}>OpenStreetMap (Standard)</Text>
-                  <Text style={styles.layerOptionDesc}>
-                    Crisp vector coastlines, harbor channels, and landmarks.
-                  </Text>
+            <TouchableWithoutFeedback>
+              <View style={styles.modalCard}>
+                <View style={styles.modalHeaderRow}>
+                  <ModernLayersIcon size={22} color="#0D47A1" />
+                  <Text style={styles.modalTitleText}>Select Chart Layer</Text>
                 </View>
-                {activeLayer === 'openstreet' && <Text style={styles.layerActiveCheck}>✓</Text>}
-              </TouchableOpacity>
+                <Text style={styles.modalSubtitleText}>
+                  Choose optimal live cartography for deep sea navigation & fishing.
+                </Text>
 
-              {/* Layer 2: Satellite Map */}
-              <TouchableOpacity
-                activeOpacity={0.8}
-                onPress={() => {
-                  setActiveLayer('satellite');
-                  setShowLayerModal(false);
-                }}
-                style={[
-                  styles.layerOptionRow,
-                  activeLayer === 'satellite' && styles.layerOptionRowActive,
-                ]}>
-                <Text style={styles.layerOptionIcon}>🛰️</Text>
-                <View style={styles.layerOptionInfo}>
-                  <Text style={styles.layerOptionTitle}>Satellite Map (Esri Ocean)</Text>
-                  <Text style={styles.layerOptionDesc}>
-                    High-resolution orbital satellite photography of reefs & open water.
-                  </Text>
-                </View>
-                {activeLayer === 'satellite' && <Text style={styles.layerActiveCheck}>✓</Text>}
-              </TouchableOpacity>
+                {/* Layer 1: OpenStreetMap */}
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={() => {
+                    setActiveLayer('openstreet');
+                    setShowLayerModal(false);
+                  }}
+                  style={[
+                    styles.layerOptionRow,
+                    activeLayer === 'openstreet' && styles.layerOptionRowActive,
+                  ]}>
+                  <View style={styles.layerOptionIconBadge}>
+                    <Text style={{ fontSize: 18 }}>🗺️</Text>
+                  </View>
+                  <View style={styles.layerOptionInfo}>
+                    <Text style={styles.layerOptionTitle}>OpenStreetMap (Standard)</Text>
+                    <Text style={styles.layerOptionDesc}>
+                      Fast rendering, coastal topology, harbors, channels & docks.
+                    </Text>
+                  </View>
+                  {activeLayer === 'openstreet' && <Text style={styles.layerActiveCheck}>✓</Text>}
+                </TouchableOpacity>
 
-              {/* Layer 3: Google Nautical Ocean */}
-              <TouchableOpacity
-                activeOpacity={0.8}
-                onPress={() => {
-                  setActiveLayer('nautical');
-                  setShowLayerModal(false);
-                }}
-                style={[
-                  styles.layerOptionRow,
-                  activeLayer === 'nautical' && styles.layerOptionRowActive,
-                ]}>
-                <Text style={styles.layerOptionIcon}>⚓</Text>
-                <View style={styles.layerOptionInfo}>
-                  <Text style={styles.layerOptionTitle}>Google / Nautical Bathymetry</Text>
-                  <Text style={styles.layerOptionDesc}>
-                    Depth soundings, underwater trenches, and coral sea contours.
-                  </Text>
-                </View>
-                {activeLayer === 'nautical' && <Text style={styles.layerActiveCheck}>✓</Text>}
-              </TouchableOpacity>
+                {/* Layer 2: Satellite Imagery */}
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={() => {
+                    setActiveLayer('satellite');
+                    setShowLayerModal(false);
+                  }}
+                  style={[
+                    styles.layerOptionRow,
+                    activeLayer === 'satellite' && styles.layerOptionRowActive,
+                  ]}>
+                  <View style={styles.layerOptionIconBadge}>
+                    <Text style={{ fontSize: 18 }}>🛰️</Text>
+                  </View>
+                  <View style={styles.layerOptionInfo}>
+                    <Text style={styles.layerOptionTitle}>ESRI High-Res Satellite</Text>
+                    <Text style={styles.layerOptionDesc}>
+                      True aerial photography of reefs, shoreline, shoals & water clarity.
+                    </Text>
+                  </View>
+                  {activeLayer === 'satellite' && <Text style={styles.layerActiveCheck}>✓</Text>}
+                </TouchableOpacity>
 
-              <TouchableOpacity
-                onPress={() => setShowLayerModal(false)}
-                style={styles.modalCloseBtn}>
-                <Text style={styles.modalCloseBtnText}>Done</Text>
-              </TouchableOpacity>
-            </View>
+                {/* Layer 3: Nautical Bathymetry */}
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={() => {
+                    setActiveLayer('nautical');
+                    setShowLayerModal(false);
+                  }}
+                  style={[
+                    styles.layerOptionRow,
+                    activeLayer === 'nautical' && styles.layerOptionRowActive,
+                  ]}>
+                  <View style={styles.layerOptionIconBadge}>
+                    <Text style={{ fontSize: 18 }}>🌊</Text>
+                  </View>
+                  <View style={styles.layerOptionInfo}>
+                    <Text style={styles.layerOptionTitle}>Nautical Ocean Chart</Text>
+                    <Text style={styles.layerOptionDesc}>
+                      Bathymetric depth gradients, marine trenches & underwater contours.
+                    </Text>
+                  </View>
+                  {activeLayer === 'nautical' && <Text style={styles.layerActiveCheck}>✓</Text>}
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={() => setShowLayerModal(false)}
+                  style={styles.modalCloseBtn}>
+                  <Text style={styles.modalCloseBtnText}>Done</Text>
+                </TouchableOpacity>
+              </View>
+            </TouchableWithoutFeedback>
           </View>
         </TouchableWithoutFeedback>
       </Modal>
 
-      {/* OFFLINE SEA TILE CACHE MANAGER MODAL */}
-      <Modal visible={showOfflineModal} transparent animationType="slide">
+      {/* 9. OFFLINE TILE CACHE MANAGER MODAL */}
+      <Modal
+        visible={showOfflineModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowOfflineModal(false)}>
         <TouchableWithoutFeedback onPress={() => setShowOfflineModal(false)}>
           <View style={styles.modalBackdrop}>
-            <View style={styles.modalCard}>
-              <View style={styles.offlineModalHeader}>
-                <Text style={styles.modalTitleText}>💾 Offline Marine Chart Cache</Text>
-                <TouchableOpacity onPress={() => setShowOfflineModal(false)}>
-                  <Text style={styles.offlineCloseText}>✕</Text>
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.offlineStatsBox}>
-                <View style={styles.offlineStatCol}>
-                  <Text style={styles.offlineStatVal}>{cachedTileCount}</Text>
-                  <Text style={styles.offlineStatLbl}>TILES SAVED</Text>
-                </View>
-                <View style={styles.offlineStatDivider} />
-                <View style={styles.offlineStatCol}>
-                  <Text style={styles.offlineStatVal}>100%</Text>
-                  <Text style={styles.offlineStatLbl}>OFFLINE READY</Text>
-                </View>
-                <View style={styles.offlineStatDivider} />
-                <View style={styles.offlineStatCol}>
-                  <Text style={styles.offlineStatVal}>6.4 MB</Text>
-                  <Text style={styles.offlineStatLbl}>STORAGE</Text>
-                </View>
-              </View>
-
-              <Text style={styles.sectorSelectTitle}>Select Fishing Sector to Pre-Cache:</Text>
-              {[
-                'Diu & Veraval Deep Basin (12-25 nmi)',
-                'Porbandar Offshore Fishing Grounds',
-                'Okha Lighthouse & Gulf of Kutch',
-                'Jafarabad & Gulf of Khambhat Basin',
-              ].map((sector) => (
-                <TouchableOpacity
-                  key={sector}
-                  onPress={() => setSelectedSector(sector)}
-                  style={[
-                    styles.sectorItemRow,
-                    selectedSector === sector && styles.sectorItemRowActive,
-                  ]}>
-                  <Text style={styles.sectorItemText}>{sector}</Text>
-                  {selectedSector === sector && <Text style={styles.sectorCheck}>✓</Text>}
-                </TouchableOpacity>
-              ))}
-
-              {isDownloadingCache && (
-                <View style={styles.downloadProgressWrap}>
-                  <Text style={styles.downloadProgressText}>
-                    Caching Nautical Tiles for {selectedSector}... {downloadProgress}%
-                  </Text>
-                  <View style={styles.progressBarTrack}>
-                    <View style={[styles.progressBarFill, { width: `${downloadProgress}%` }]} />
+            <TouchableWithoutFeedback>
+              <View style={styles.modalCard}>
+                <View style={styles.offlineModalHeader}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                    <OfflineStorageIcon size={22} color="#0D47A1" />
+                    <Text style={styles.modalTitleText}>Offline Marine Storage</Text>
                   </View>
                 </View>
-              )}
 
-              <TouchableOpacity
-                disabled={isDownloadingCache}
-                onPress={handleStartOfflineDownload}
-                style={styles.downloadActionBtn}>
-                <Text style={styles.downloadActionText}>
-                  {isDownloadingCache ? 'Downloading to Disk...' : '⬇️ Download Sector for Offline Sea Mode'}
+                <Text style={styles.modalSubtitleText}>
+                  Cache full nautical chart grids for deep offshore navigation where mobile network is unavailable.
                 </Text>
-              </TouchableOpacity>
-            </View>
+
+                <View style={styles.offlineStatsBox}>
+                  <View style={styles.offlineStatCol}>
+                    <Text style={styles.offlineStatVal}>{cachedTileCount}</Text>
+                    <Text style={styles.offlineStatLbl}>STORED TILES</Text>
+                  </View>
+                  <View style={styles.offlineStatDivider} />
+                  <View style={styles.offlineStatCol}>
+                    <Text style={styles.offlineStatVal}>{(cachedTileCount * 0.024).toFixed(1)} MB</Text>
+                    <Text style={styles.offlineStatLbl}>CACHE SIZE</Text>
+                  </View>
+                  <View style={styles.offlineStatDivider} />
+                  <View style={styles.offlineStatCol}>
+                    <Text style={[styles.offlineStatVal, { color: '#059669' }]}>100%</Text>
+                    <Text style={styles.offlineStatLbl}>OFFLINE READY</Text>
+                  </View>
+                </View>
+
+                <Text style={styles.sectorSelectTitle}>Select Fishing Sector:</Text>
+
+                {[
+                  'Diu & Veraval Deep Basin',
+                  'Porbandar Continental Shelf',
+                  'Gulf of Khambhat Estuary',
+                  'Okha & Dwarka Reefs',
+                ].map((sector) => (
+                  <TouchableOpacity
+                    key={sector}
+                    activeOpacity={0.8}
+                    onPress={() => setSelectedSector(sector)}
+                    style={[
+                      styles.sectorItemRow,
+                      selectedSector === sector && styles.sectorItemRowActive,
+                    ]}>
+                    <Text style={styles.sectorItemText}>{sector}</Text>
+                    {selectedSector === sector && <Text style={styles.sectorCheck}>✓</Text>}
+                  </TouchableOpacity>
+                ))}
+
+                {isDownloadingCache ? (
+                  <View style={styles.downloadProgressWrap}>
+                    <Text style={styles.downloadProgressText}>
+                      Caching tiles: {downloadProgress}%
+                    </Text>
+                    <View style={styles.progressBarTrack}>
+                      <View style={[styles.progressBarFill, { width: `${downloadProgress}%` }]} />
+                    </View>
+                  </View>
+                ) : (
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={handleStartOfflineDownload}
+                    style={styles.downloadActionBtn}>
+                    <Text style={styles.downloadActionText}>Download Sector Tiles (15 Mi)</Text>
+                  </TouchableOpacity>
+                )}
+
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={() => setShowOfflineModal(false)}
+                  style={[styles.modalCloseBtn, { backgroundColor: '#F1F5F9' }]}>
+                  <Text style={[styles.modalCloseBtnText, { color: '#334155' }]}>Close</Text>
+                </TouchableOpacity>
+              </View>
+            </TouchableWithoutFeedback>
           </View>
         </TouchableWithoutFeedback>
       </Modal>
@@ -766,7 +1388,7 @@ export default function MarineMapScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0F172A',
+    backgroundColor: '#F8FAFC',
   },
 
   // 1. TOP HEADER BAR
@@ -774,61 +1396,44 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
     paddingVertical: 8,
     backgroundColor: '#FFFFFF',
     borderBottomWidth: 1,
     borderBottomColor: '#E2E8F0',
-    zIndex: 30,
-  },
-  backButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingRight: 6,
-  },
-  backArrow: {
-    fontSize: 26,
-    color: '#0D47A1',
-    lineHeight: 26,
-  },
-  backText: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: '#0D47A1',
+    zIndex: 60,
   },
   layerSelectorBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F1F5F9',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 14,
-    gap: 6,
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: '#CBD5E1',
-  },
-  layerSelectorIcon: {
-    fontSize: 14,
+    borderColor: '#BFDBFE',
+    gap: 7,
   },
   layerSelectorText: {
-    fontSize: 12,
+    fontSize: 12.5,
     fontWeight: '800',
-    color: '#0F172A',
+    color: '#0D47A1',
   },
   layerDropdownArrow: {
     fontSize: 9,
-    color: '#64748B',
+    color: '#0D47A1',
+    marginTop: 1,
   },
   offlineStatusPill: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#ECFDF5',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#6EE7B7',
+    borderColor: '#A7F3D0',
+    gap: 6,
   },
   offlineDot: {
     width: 6,
@@ -837,69 +1442,75 @@ const styles = StyleSheet.create({
     backgroundColor: '#10B981',
   },
   offlineStatusText: {
-    fontSize: 10.5,
+    fontSize: 11,
     fontWeight: '800',
     color: '#047857',
   },
 
-  // 2. HUD CARDS
+  // 2. TOP HUD METRICS (4 CARDS) - Rock-solid 52px fixed height, perfectly stable
   hudRow: {
     flexDirection: 'row',
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    backgroundColor: '#0D47A1',
+    paddingVertical: 8,
+    paddingHorizontal: 8,
     gap: 6,
-    zIndex: 25,
+    zIndex: 58,
+    alignItems: 'stretch',
   },
   hudCard: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    height: 52,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
     borderRadius: 10,
-    paddingVertical: 6,
+    paddingHorizontal: 4,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: 'rgba(255, 255, 255, 0.18)',
   },
   hudLabel: {
+    color: '#93C5FD',
     fontSize: 9,
     fontWeight: '800',
-    color: '#64748B',
     letterSpacing: 0.5,
+    lineHeight: 12,
+    textAlign: 'center',
   },
   hudValue: {
-    fontSize: 16,
+    color: '#FFFFFF',
+    fontSize: 14,
     fontWeight: '900',
-    color: '#0D47A1',
     marginTop: 2,
+    lineHeight: 18,
+    textAlign: 'center',
   },
 
-  // 3. BLACK POSITION BANNER
+  // 3. BLACK POSITION & DGPS BANNER
   positionBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#000000',
+    backgroundColor: '#0F172A',
+    paddingVertical: 7,
     paddingHorizontal: 14,
-    paddingVertical: 4,
-    zIndex: 20,
+    zIndex: 55,
   },
   positionText: {
-    color: '#FFFFFF',
-    fontSize: 11,
+    color: '#38BDF8',
+    fontSize: 12,
     fontWeight: '800',
-    letterSpacing: 0.5,
+    letterSpacing: 0.8,
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
   dgpsStatusWrap: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 6,
   },
   dgpsDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
     backgroundColor: '#00E676',
   },
   dgpsText: {
@@ -911,8 +1522,20 @@ const styles = StyleSheet.create({
   // 4. MAP CANVAS
   mapCanvasWrapper: {
     flex: 1,
-    backgroundColor: '#93C5FD',
+    backgroundColor: '#AAD3DF',
     overflow: 'hidden',
+    position: 'relative',
+    ...(Platform.OS === 'web'
+      ? {
+          userSelect: 'none' as const,
+          touchAction: 'none' as const,
+          cursor: 'grab' as const,
+        }
+      : {}),
+  },
+  mapContentLayer: {
+    width: '100%',
+    height: '100%',
     position: 'relative',
   },
   mapTile: {
@@ -920,36 +1543,74 @@ const styles = StyleSheet.create({
     width: 256,
     height: 256,
   },
-  shippingLaneLine: {
+
+  // BREADCRUMBS
+  breadcrumbDot: {
     position: 'absolute',
-    width: 140,
-    height: 20,
-    borderStyle: 'dashed',
-    borderTopWidth: 2,
-    borderBottomWidth: 2,
-    borderColor: 'rgba(255, 235, 59, 0.7)',
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(234, 88, 12, 0.85)',
+    zIndex: 32,
   },
-  bearingRayLine: {
+
+  // ONLY ACTIVE NAVIGATION ROUTE LINE
+  routeOuterGlow: {
     position: 'absolute',
-    width: 2,
-    height: 280,
-    backgroundColor: '#EF4444',
-    borderStyle: 'dashed',
+    height: 8,
+    backgroundColor: 'rgba(6, 182, 212, 0.45)',
+    borderRadius: 4,
+    zIndex: 36,
+  },
+  routeCoreLine: {
+    position: 'absolute',
+    height: 3.5,
+    backgroundColor: '#00E5FF',
+    borderRadius: 1.75,
+    zIndex: 37,
+  },
+  routeBadgePill: {
+    position: 'absolute',
+    width: 120,
+    backgroundColor: 'rgba(15, 23, 42, 0.92)',
+    paddingVertical: 3,
+    paddingHorizontal: 6,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#00E5FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 42,
+  },
+  routeBadgeText: {
+    color: '#00E5FF',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  targetPulseCircle: {
+    position: 'absolute',
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 2.5,
+    borderColor: '#00E5FF',
+    backgroundColor: 'rgba(0, 229, 255, 0.15)',
+    zIndex: 38,
   },
 
   // WAYPOINT PINS
   waypointPinWrap: {
     position: 'absolute',
     alignItems: 'center',
-    zIndex: 35,
+    zIndex: 40,
   },
   waypointPinSelected: {
     transform: [{ scale: 1.25 }],
   },
   waypointBeacon: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     backgroundColor: '#0D47A1',
     alignItems: 'center',
     justifyContent: 'center',
@@ -965,15 +1626,21 @@ const styles = StyleSheet.create({
     backgroundColor: '#E11D48',
     borderColor: '#FFE4E6',
   },
-  waypointBeaconIcon: {
-    fontSize: 15,
+  waypointBeaconSelected: {
+    backgroundColor: '#7C3AED',
+    borderColor: '#EDE9FE',
+  },
+  waypointBeaconText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '900',
   },
   waypointNeedleTip: {
     width: 0,
     height: 0,
     borderLeftWidth: 5,
     borderRightWidth: 5,
-    borderTopWidth: 8,
+    borderTopWidth: 7,
     borderLeftColor: 'transparent',
     borderRightColor: 'transparent',
     borderTopColor: '#0D47A1',
@@ -982,6 +1649,9 @@ const styles = StyleSheet.create({
   needleTipTarget: {
     borderTopColor: '#E11D48',
   },
+  needleTipSelected: {
+    borderTopColor: '#7C3AED',
+  },
   waypointPillBox: {
     backgroundColor: 'rgba(15, 23, 42, 0.88)',
     paddingHorizontal: 6,
@@ -989,6 +1659,9 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     marginTop: 2,
     maxWidth: 95,
+  },
+  waypointPillBoxTarget: {
+    backgroundColor: 'rgba(225, 29, 72, 0.92)',
   },
   waypointPillText: {
     color: '#FFFFFF',
@@ -1000,23 +1673,36 @@ const styles = StyleSheet.create({
   // FISHING VESSEL MARKER
   boatMarkerWrap: {
     position: 'absolute',
-    width: 44,
-    height: 44,
+    width: 48,
+    height: 48,
     alignItems: 'center',
     justifyContent: 'center',
-    zIndex: 40,
+    zIndex: 45,
+  },
+  boatTouchInner: {
+    width: '100%',
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   radarCone: {
     position: 'absolute',
-    top: -50,
+    top: -55,
     width: 0,
     height: 0,
-    borderLeftWidth: 35,
-    borderRightWidth: 35,
-    borderTopWidth: 60,
+    borderLeftWidth: 40,
+    borderRightWidth: 40,
+    borderTopWidth: 65,
     borderLeftColor: 'transparent',
     borderRightColor: 'transparent',
-    borderTopColor: 'rgba(56, 189, 248, 0.22)',
+    borderTopColor: 'rgba(6, 182, 212, 0.22)',
+  },
+  bowHeadingLine: {
+    position: 'absolute',
+    top: -45,
+    width: 2,
+    height: 45,
+    backgroundColor: '#00E5FF',
   },
   boatHull: {
     width: 28,
@@ -1024,36 +1710,38 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  boatBowRed: {
+  boatBowTriangle: {
     width: 0,
     height: 0,
-    borderLeftWidth: 10,
-    borderRightWidth: 10,
-    borderBottomWidth: 18,
+    borderLeftWidth: 9,
+    borderRightWidth: 9,
+    borderBottomWidth: 16,
     borderLeftColor: 'transparent',
     borderRightColor: 'transparent',
     borderBottomColor: '#EF4444',
   },
-  boatSternBlue: {
+  boatDeck: {
     width: 14,
     height: 8,
-    backgroundColor: '#2563EB',
+    backgroundColor: '#1E40AF',
     borderBottomLeftRadius: 3,
     borderBottomRightRadius: 3,
     marginTop: -2,
   },
-  boatCenterAnchor: {
+  boatCenterPip: {
     position: 'absolute',
-    width: 14,
-    height: 14,
-    borderRadius: 7,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
     backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  boatAnchorText: {
-    fontSize: 9,
-    lineHeight: 11,
+  boatInnerDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#0D47A1',
   },
 
   // WEATHER OVERLAY
@@ -1077,264 +1765,231 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 
-  // FLOATING TOOLBARS
-  leftToolbar: {
-    position: 'absolute',
-    top: 70,
-    left: 12,
-    gap: 12,
-    zIndex: 45,
-  },
-  rightToolbar: {
-    position: 'absolute',
-    top: 70,
-    right: 12,
-    gap: 12,
-    zIndex: 45,
-  },
-  toolBtnPill: {
-    backgroundColor: '#F1F5F9',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowRadius: 3,
-    elevation: 3,
-  },
-  toolBtnText: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: '#1E293B',
-  },
-  toolBtnCircleOrange: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    backgroundColor: '#FF6D00',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: '#FFFFFF',
-    shadowColor: '#000',
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 4,
-  },
-  toolBtnCircleOrangeActive: {
-    backgroundColor: '#D50000',
-  },
-  toolBtnPlayIcon: {
-    fontSize: 18,
-    color: '#FFFFFF',
-    fontWeight: '900',
-  },
-  toolBtnSquare: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: '#FFFFFF',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowRadius: 3,
-    elevation: 3,
-  },
-  toolBtnSquareIcon: {
-    fontSize: 18,
-  },
-  toolBtnSquareGreen: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: '#10B981',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: '#059669',
-    shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowRadius: 3,
-    elevation: 3,
-  },
-  toolBtnGreenText: {
-    color: '#FFFFFF',
-    fontSize: 11,
-    fontWeight: '900',
-  },
-  toolBtnSquarePurple: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: '#8B5CF6',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: '#7C3AED',
-    shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowRadius: 3,
-    elevation: 3,
-  },
-
-  // CENTER BOTTOM ZOOM
-  centerZoomControls: {
+  // 5. BOTTOM-LEFT ZOOM CONTROLS (ONLY + AND - BUTTONS, NO Z13 BADGE)
+  bottomLeftZoomCapsule: {
     position: 'absolute',
     bottom: 24,
-    alignSelf: 'center',
-    flexDirection: 'row',
+    left: 16,
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    paddingHorizontal: 4,
-    paddingVertical: 2,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
     shadowColor: '#000',
     shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 5,
-    zIndex: 45,
+    shadowOffset: { width: 0, height: 3 },
+    shadowRadius: 6,
+    elevation: 8,
+    zIndex: 48,
   },
-  zoomButton: {
-    width: 40,
-    height: 40,
+  zoomCapBtn: {
+    width: 48,
+    height: 48,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  zoomButtonText: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  zoomLevelBadge: {
-    paddingHorizontal: 8,
-  },
-  zoomLevelText: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: '#64748B',
+  zoomDivider: {
+    width: 26,
+    height: 1.5,
+    backgroundColor: '#E2E8F0',
   },
 
-  unhideFloatingPill: {
+  // 6. BOTTOM-RIGHT FLOATING COMMAND CONSOLE & HIGH-TECH FAB
+  bottomRightDockWrapper: {
     position: 'absolute',
     bottom: 24,
-    left: 20,
-    backgroundColor: '#0F172A',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 20,
-    shadowColor: '#000',
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 5,
-    zIndex: 50,
+    right: 16,
+    alignItems: 'center',
+    gap: 10,
+    zIndex: 55,
   },
-  unhideText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '800',
+  bottomRightFloatingDock: {
+    backgroundColor: 'rgba(255, 255, 255, 0.96)',
+    borderRadius: 20,
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+    gap: 8,
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    shadowColor: '#000',
+    shadowOpacity: 0.28,
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 10,
+    elevation: 9,
+    alignItems: 'center',
+  },
+  dockActionBtnBig: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: '#F8FAFC',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  dockActionBtnRecording: {
+    backgroundColor: '#FEE2E2',
+    borderColor: '#EF4444',
+  },
+  dockActionBtnBigPurple: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: '#7C3AED',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#6D28D9',
+  },
+  toolsFabButton: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    backgroundColor: '#0D47A1',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.35,
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 8,
+    elevation: 9,
+    borderWidth: 2,
+    borderColor: '#38BDF8',
+  },
+  toolsFabButtonActive: {
+    backgroundColor: '#0F172A',
+    borderColor: '#64748B',
   },
 
-  // WAYPOINT INSPECTOR OVERLAY CARD
+  // 7. WAYPOINT INSPECTOR OVERLAY CARD
   waypointInspectorCard: {
     position: 'absolute',
-    bottom: 20,
-    left: 16,
-    right: 16,
+    bottom: 16,
+    left: 12,
+    right: 12,
     backgroundColor: '#FFFFFF',
-    borderRadius: 16,
+    borderRadius: 20,
     padding: 16,
     shadowColor: '#000',
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 8,
+    shadowOpacity: 0.32,
+    shadowRadius: 12,
+    elevation: 12,
     borderWidth: 1.5,
     borderColor: '#0D47A1',
-    zIndex: 60,
+    zIndex: 70,
   },
   inspectorTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 6,
+    marginBottom: 10,
   },
   inspectorTitleWrap: {
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
-    gap: 8,
+    gap: 10,
   },
-  inspectorPinEmoji: {
-    fontSize: 20,
+  inspectorPinBadge: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#EFF6FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
   },
   inspectorNameText: {
     fontSize: 16,
     fontWeight: '900',
     color: '#0F172A',
-    flex: 1,
+  },
+  inspectorCoordsText: {
+    fontSize: 11.5,
+    fontWeight: '700',
+    color: '#2563EB',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    marginTop: 2,
   },
   inspectorCloseBtn: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     backgroundColor: '#F1F5F9',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  inspectorCloseText: {
-    fontSize: 14,
+  inspectorStatsRow: {
+    flexDirection: 'row',
+    backgroundColor: '#F8FAFC',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    gap: 12,
+  },
+  inspectorStatBox: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  inspectorStatLbl: {
+    fontSize: 9,
     fontWeight: '800',
     color: '#64748B',
   },
-  inspectorCoordsText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#2563EB',
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-    marginBottom: 4,
-  },
-  inspectorMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 12,
-  },
-  inspectorMetaText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#64748B',
+  inspectorStatVal: {
+    fontSize: 14,
+    fontWeight: '900',
+    color: '#0D47A1',
+    marginTop: 2,
   },
   inspectorButtonsRow: {
     flexDirection: 'row',
-    gap: 10,
+    gap: 8,
   },
   inspectorTargetBtn: {
     flex: 2,
+    flexDirection: 'row',
     backgroundColor: '#0D47A1',
-    paddingVertical: 10,
-    borderRadius: 10,
+    paddingVertical: 11,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 6,
   },
   inspectorTargetBtnText: {
     color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '800',
   },
-  inspectorVoiceBtn: {
-    flex: 1,
-    backgroundColor: '#0284C7',
-    paddingVertical: 10,
-    borderRadius: 10,
+  inspectorCompassBtn: {
+    flex: 1.2,
+    flexDirection: 'row',
+    backgroundColor: '#1E293B',
+    paddingVertical: 11,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 5,
+  },
+  inspectorCompassBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  inspectorVoiceBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    backgroundColor: '#0284C7',
+    paddingVertical: 11,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
   },
   inspectorVoiceBtnText: {
     color: '#FFFFFF',
@@ -1356,10 +2011,15 @@ const styles = StyleSheet.create({
     padding: 20,
     width: '100%',
     maxWidth: 420,
-    gap: 14,
+    gap: 12,
+  },
+  modalHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   modalTitleText: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '900',
     color: '#0F172A',
   },
@@ -1367,7 +2027,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#64748B',
     lineHeight: 18,
-    fontWeight: '600',
+    fontWeight: '500',
   },
   layerOptionRow: {
     flexDirection: 'row',
@@ -1383,14 +2043,21 @@ const styles = StyleSheet.create({
     backgroundColor: '#EFF6FF',
     borderColor: '#3B82F6',
   },
-  layerOptionIcon: {
-    fontSize: 26,
+  layerOptionIconBadge: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
   },
   layerOptionInfo: {
     flex: 1,
   },
   layerOptionTitle: {
-    fontSize: 14,
+    fontSize: 13.5,
     fontWeight: '800',
     color: '#0F172A',
   },
@@ -1411,7 +2078,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 6,
+    marginTop: 4,
   },
   modalCloseBtnText: {
     color: '#FFFFFF',
@@ -1424,12 +2091,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-  },
-  offlineCloseText: {
-    fontSize: 18,
-    color: '#64748B',
-    fontWeight: '800',
-    padding: 4,
   },
   offlineStatsBox: {
     flexDirection: 'row',

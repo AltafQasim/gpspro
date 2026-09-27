@@ -8,7 +8,10 @@
     "scheme": "gpspro",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/expo.icon",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "GPS Pro needs your location for marine navigation, vessel heading, and compass direction."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -17,6 +20,10 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION"
+      ],
       "predictiveBackGestureEnabled": false,
       "package": "com.ak2424.gpspro"
     },

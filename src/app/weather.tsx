@@ -14,6 +14,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { BackButton } from '@/components/ui/back-button';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -86,17 +87,11 @@ export default function SeaWeatherScreen() {
 
   return (
     <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={styles.container}>
-      <StatusBar style="dark" />
+      <StatusBar style="dark" animated={true} />
 
       {/* Screen Header */}
       <View style={styles.topNavRow}>
-        <TouchableOpacity
-          activeOpacity={0.7}
-          onPress={() => router.back()}
-          style={styles.backBtn}>
-          <Text style={styles.backArrow}>‹</Text>
-          <Text style={styles.backText}>Home</Text>
-        </TouchableOpacity>
+        <BackButton showLabel={true} label="Home" />
 
         <Text style={styles.headerTitle}>SEA WEATHER FORECAST</Text>
 

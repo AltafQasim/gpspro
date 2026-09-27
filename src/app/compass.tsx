@@ -25,10 +25,45 @@ import {
   subscribeActiveTarget,
 } from '@/services/waypointStore';
 import { VoiceService } from '@/services/voiceService';
+import {
+  GpsService,
+  LocationTelemetry,
+  calculateNavDistanceAndBearing,
+  formatNauticalLat,
+  formatNauticalLon,
+} from '@/services/gpsService';
+import { BackButton } from '@/components/ui/back-button';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const DIAL_SIZE = Math.min(SCREEN_WIDTH * 0.82, 330);
+const DIAL_SIZE = Math.min(SCREEN_WIDTH * 0.84, 336);
 const DIAL_RADIUS = DIAL_SIZE / 2;
+
+// 12 Major Compass Degree Labels & Cardinals
+const DIAL_LABELS = [
+  { deg: 0, label: 'N', isCardinal: true, isNorth: true },
+  { deg: 30, label: '30°', isCardinal: false, isNorth: false },
+  { deg: 60, label: '60°', isCardinal: false, isNorth: false },
+  { deg: 90, label: 'E', isCardinal: true, isNorth: false },
+  { deg: 120, label: '120°', isCardinal: false, isNorth: false },
+  { deg: 150, label: '150°', isCardinal: false, isNorth: false },
+  { deg: 180, label: 'S', isCardinal: true, isNorth: false },
+  { deg: 210, label: '210°', isCardinal: false, isNorth: false },
+  { deg: 240, label: '240°', isCardinal: false, isNorth: false },
+  { deg: 270, label: 'W', isCardinal: true, isNorth: false },
+  { deg: 300, label: '300°', isCardinal: false, isNorth: false },
+  { deg: 330, label: '330°', isCardinal: false, isNorth: false },
+];
+
+function getCardinalDirection(deg: number): string {
+  const cardinals = [
+    'N', 'NNE', 'NE', 'ENE',
+    'E', 'ESE', 'SE', 'SSE',
+    'S', 'SSW', 'SW', 'WSW',
+    'W', 'WNW', 'NW', 'NNW',
+  ];
+  const index = Math.round(((deg % 360) + 360) % 360 / 22.5) % 16;
+  return cardinals[index];
+}
 
 export default function CompassScreen() {
   const router = useRouter();
@@ -56,24 +91,51 @@ export default function CompassScreen() {
   const [showWaypointModal, setShowWaypointModal] = useState<boolean>(false);
   const [modalSearch, setModalSearch] = useState<string>('');
 
-  const currentPosLat = "N 20° 44.571'";
-  const currentPosLon = "E 71° 04.313'";
+  // Live Mobile GPS & Sensor Telemetry State
+  const [currentPosLat, setCurrentPosLat] = useState<string>("N 20° 44.571'");
+  const [currentPosLon, setCurrentPosLon] = useState<string>("E 71° 04.313'");
+  const [hasGpsFix, setHasGpsFix] = useState<boolean>(false);
+  const [sensorActive, setSensorActive] = useState<boolean>(false);
+  const [permissionStatus, setPermissionStatus] = useState<'granted' | 'denied' | 'undetermined'>('undetermined');
   const etaTime = '08:42 PM';
   const currentTime = '08:17 PM';
   const moonRise = '5:46 PM';
   const moonSet = '5:07 AM';
   const moonIllumination = '99%';
 
-  // Smooth continuous rotation animation refs (shortest angle calculation)
+  // Continuous rotation animation refs (shortest angle calculation)
   const accumulatedRotationRef = useRef<number>(-354);
   const accumulatedArrowRef = useRef<number>(141);
   const rotationAnim = useRef(new Animated.Value(-354)).current;
   const arrowRotateAnim = useRef(new Animated.Value(141)).current;
 
+  // Real-time synced references for gestures & listeners
+  const headingRef = useRef<number>(354);
+  const targetBearingRef = useRef<number>(135);
+  const isNavigatingRef = useRef<boolean>(true);
+  const targetNameRef = useRef<string>('7ka cheo ram reef');
+  const panStartHeadingRef = useRef<number>(354);
+
+  // Sync refs with state
+  useEffect(() => {
+    headingRef.current = heading;
+  }, [heading]);
+  useEffect(() => {
+    targetBearingRef.current = targetBearing;
+  }, [targetBearing]);
+  useEffect(() => {
+    isNavigatingRef.current = isNavigating;
+  }, [isNavigating]);
+  useEffect(() => {
+    targetNameRef.current = targetName;
+  }, [targetName]);
+
   // Function to smoothly animate compass heading and waypoint pointer
   const animateToHeading = (newHeading: number, newTargetBearing: number, navigating: boolean) => {
     const normH = ((newHeading % 360) + 360) % 360;
-    setHeading(Math.round(normH));
+    const roundedH = Math.round(normH);
+    setHeading(roundedH);
+    headingRef.current = roundedH;
 
     // Compass bezel rotates in opposite direction to show magnetic direction
     const targetDialAngle = -normH;
@@ -83,7 +145,7 @@ export default function CompassScreen() {
     Animated.spring(rotationAnim, {
       toValue: accumulatedRotationRef.current,
       friction: 12,
-      tension: 45,
+      tension: 50,
       useNativeDriver: true,
     }).start();
 
@@ -96,11 +158,13 @@ export default function CompassScreen() {
       Animated.spring(arrowRotateAnim, {
         toValue: accumulatedArrowRef.current,
         friction: 12,
-        tension: 45,
+        tension: 50,
         useNativeDriver: true,
       }).start();
     }
   };
+
+
 
   // Sync route params on screen entry (when coming from Waypoints or Map)
   useEffect(() => {
@@ -108,24 +172,28 @@ export default function CompassScreen() {
       const b = parseInt(params.targetBearing || '0') || 0;
       setTargetName(params.targetName);
       setTargetBearing(b);
+      targetBearingRef.current = b;
       setDistanceNmi(params.targetDistance || '0.00 Mi');
       if (params.targetLat && params.targetLon) {
         setTargetCoords(`${params.targetLat}, ${params.targetLon}`);
       }
       setIsNavigating(true);
-      animateToHeading(heading, b, true);
+      isNavigatingRef.current = true;
+      animateToHeading(headingRef.current, b, true);
     } else {
       const globalTarget = getActiveTarget();
       if (globalTarget) {
         const b = parseInt(globalTarget.bearing) || 0;
         setTargetName(globalTarget.name);
         setTargetBearing(b);
+        targetBearingRef.current = b;
         setDistanceNmi(globalTarget.distance);
         setTargetCoords(
           `${globalTarget.latDir} ${globalTarget.latDeg}° ${globalTarget.latMin}', ${globalTarget.lonDir} ${globalTarget.lonDeg}° ${globalTarget.lonMin}'`
         );
         setIsNavigating(true);
-        animateToHeading(heading, b, true);
+        isNavigatingRef.current = true;
+        animateToHeading(headingRef.current, b, true);
       }
     }
   }, [params.targetName, params.targetBearing, params.targetDistance, params.targetLat, params.targetLon]);
@@ -137,45 +205,145 @@ export default function CompassScreen() {
         const b = parseInt(newTarget.bearing) || 0;
         setTargetName(newTarget.name);
         setTargetBearing(b);
+        targetBearingRef.current = b;
         setDistanceNmi(newTarget.distance);
         setTargetCoords(
           `${newTarget.latDir} ${newTarget.latDeg}° ${newTarget.latMin}', ${newTarget.lonDir} ${newTarget.lonDeg}° ${newTarget.lonMin}'`
         );
         setIsNavigating(true);
-        animateToHeading(heading, b, true);
+        isNavigatingRef.current = true;
+        animateToHeading(headingRef.current, b, true);
       } else {
         setTargetName('');
         setIsNavigating(false);
+        isNavigatingRef.current = false;
         setTargetBearing(0);
+        targetBearingRef.current = 0;
         setDistanceNmi('--');
         setTargetCoords('--');
       }
     });
     return unsub;
-  }, [heading]);
+  }, []);
 
-  // Gentle realistic marine heading sway simulation for lifelike gyro motion
+  // Butter-Smooth Low-Pass Filter for Mobile Sensor Heading
+  const filteredSensorHRef = useRef<number>(354);
+  const handleSensorHeading = (rawHeading: number) => {
+    setSensorActive(true);
+    const cur = filteredSensorHRef.current;
+    // Shortest angular difference (-180 to 180)
+    const diff = ((((rawHeading - cur) % 360) + 540) % 360) - 180;
+
+    // Small jitter deadzone to prevent micro-vibrations
+    if (Math.abs(diff) < 0.5) return;
+
+    // Adaptive smoothing: 0.22 for normal motion, 0.45 for rapid turns
+    const alpha = Math.abs(diff) > 40 ? 0.45 : 0.22;
+    const nextH = ((cur + diff * alpha) % 360 + 360) % 360;
+    filteredSensorHRef.current = nextH;
+
+    animateToHeading(nextH, targetBearingRef.current, isNavigatingRef.current && !!targetNameRef.current);
+  };
+
+  // Live GPS Telemetry Update
+  const handleLocationUpdate = (telemetry: LocationTelemetry) => {
+    setHasGpsFix(true);
+    setCurrentPosLat(telemetry.latFormatted);
+    setCurrentPosLon(telemetry.lonFormatted);
+    if (telemetry.speedKnots >= 0) {
+      setSpeedKnots(telemetry.speedKnots);
+    }
+  };
+
+  // Request Location & Mobile Sensor Access
+  const handleRequestPermission = async () => {
+    const status = await GpsService.requestPermissions();
+    if (status === 'granted') {
+      setPermissionStatus('granted');
+      GpsService.startLocationTracking(handleLocationUpdate);
+      GpsService.startHeadingTracking(handleSensorHeading);
+    } else {
+      setPermissionStatus('denied');
+      Alert.alert(
+        'GPS Access Denied 🛰️',
+        'Vessel position aur compass orientation ke liye Location permission zaroori hai. Kripya app settings me location allow karein.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Retry', onPress: handleRequestPermission },
+        ]
+      );
+    }
+  };
+
+  // Check and initialize permissions on mount
   useEffect(() => {
-    let curH = heading;
+    let mounted = true;
+    (async () => {
+      const status = await GpsService.checkPermissions();
+      if (!mounted) return;
+      if (status === 'granted') {
+        setPermissionStatus('granted');
+        GpsService.startLocationTracking(handleLocationUpdate);
+        GpsService.startHeadingTracking(handleSensorHeading);
+      } else {
+        setPermissionStatus(status === 'denied' ? 'denied' : 'undetermined');
+        // Prompt user immediately if undetermined
+        const req = await GpsService.requestPermissions();
+        if (!mounted) return;
+        if (req === 'granted') {
+          setPermissionStatus('granted');
+          GpsService.startLocationTracking(handleLocationUpdate);
+          GpsService.startHeadingTracking(handleSensorHeading);
+        } else {
+          setPermissionStatus('denied');
+        }
+      }
+    })();
+
+    return () => {
+      mounted = false;
+      GpsService.stopAll();
+    };
+  }, []);
+
+  // Realistic gentle marine yaw sway around current heading when sensor is still
+  useEffect(() => {
     const interval = setInterval(() => {
-      // Gentle natural boat yaw sway (-1.2° to +1.2°)
-      const delta = (Math.random() - 0.5) * 2.4;
-      curH = (curH + delta + 360) % 360;
-      animateToHeading(curH, targetBearing, isNavigating && !!targetName);
-    }, 1200);
+      // Only sway if sensor is not actively updating
+      if (sensorActive) return;
+      const sway = (Math.random() - 0.5) * 1.5;
+      const swayH = ((headingRef.current + sway) % 360 + 360) % 360;
+      const targetDialAngle = -swayH;
+      const dialDiff = ((targetDialAngle - (accumulatedRotationRef.current % 360) + 540) % 360) - 180;
+      accumulatedRotationRef.current += dialDiff;
+
+      Animated.spring(rotationAnim, {
+        toValue: accumulatedRotationRef.current,
+        friction: 14,
+        tension: 40,
+        useNativeDriver: true,
+      }).start();
+    }, 1400);
 
     return () => clearInterval(interval);
-  }, [targetBearing, isNavigating, targetName]);
+  }, [sensorActive]);
 
-  // PanResponder to allow captain to smoothly drag / rotate compass dial on any device
+  // PanResponder to allow captain to smoothly drag / rotate compass dial with finger in 360°
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: () => {
+        panStartHeadingRef.current = headingRef.current;
+      },
       onPanResponderMove: (_, gestureState) => {
-        // Drag horizontally to rotate compass dial smoothly
-        const deltaDeg = gestureState.dx * 0.4;
-        const newH = (heading - deltaDeg + 360) % 360;
-        animateToHeading(newH, targetBearing, isNavigating && !!targetName);
+        // Drag horizontally to rotate compass dial smoothly (0.5 deg per pixel)
+        const deltaDeg = gestureState.dx * 0.5;
+        const newH = ((panStartHeadingRef.current - deltaDeg) % 360 + 360) % 360;
+        animateToHeading(newH, targetBearingRef.current, isNavigatingRef.current && !!targetNameRef.current);
+      },
+      onPanResponderRelease: () => {
+        panStartHeadingRef.current = headingRef.current;
       },
     })
   ).current;
@@ -228,35 +396,58 @@ export default function CompassScreen() {
 
   const theme = nightMode
     ? {
-        bg: '#0A0E17',
+        bg: '#060B16',
+        headerBg: 'rgba(12, 22, 45, 0.75)',
         headerText: '#FFFFFF',
-        cardBg: '#131B2A',
-        cardBorder: 'rgba(0, 229, 255, 0.2)',
-        label: '#90A4AE',
-        value: '#00E5FF',
-        subVal: '#81D4FA',
+        headerSub: '#38BDF8',
+        cardBg: '#0B1528',
+        cardBorder: 'rgba(56, 189, 248, 0.22)',
+        cardAccent: '#00E5FF',
+        label: '#94A3B8',
+        value: '#38BDF8',
+        valueBright: '#FFFFFF',
+        subVal: '#7DD3FC',
         accent: '#00E5FF',
-        dialBezel: '#00B0FF',
-        dialGlow: 'rgba(0, 229, 255, 0.15)',
-        arrowColor: '#FF9100',
+        dialBg: '#07101E',
+        dialBezel: '#0284C7',
+        dialBezelBorder: 'rgba(56, 189, 248, 0.4)',
+        dialGlow: 'rgba(0, 229, 255, 0.18)',
+        dialTickMajor: '#00E5FF',
+        dialTickMinor: 'rgba(56, 189, 248, 0.35)',
+        dialTickText: '#94A3B8',
+        arrowColor: '#FF6D00',
         hubColor: '#FFB300',
+        hubBorder: '#FFFFFF',
+        cardinalN: '#EF4444',
       }
     : {
-        bg: '#F4FAFC',
-        headerText: '#102A43',
-        cardBg: '#E0F7FA',
-        cardBorder: '#80DEEA',
-        label: '#243B53',
-        value: '#00796B',
-        subVal: '#0097A7',
-        accent: '#00BCD4',
-        dialBezel: '#00E5FF',
-        dialGlow: 'rgba(0, 229, 255, 0.25)',
-        arrowColor: '#FF6D00',
-        hubColor: '#FF9100',
+        bg: '#F1F6FA',
+        headerBg: 'rgba(255, 255, 255, 0.85)',
+        headerText: '#0F172A',
+        headerSub: '#0284C7',
+        cardBg: '#FFFFFF',
+        cardBorder: '#D0E3F0',
+        cardAccent: '#0284C7',
+        label: '#64748B',
+        value: '#0369A1',
+        valueBright: '#0F172A',
+        subVal: '#0284C7',
+        accent: '#0284C7',
+        dialBg: '#FFFFFF',
+        dialBezel: '#0284C7',
+        dialBezelBorder: 'rgba(2, 132, 199, 0.3)',
+        dialGlow: 'rgba(2, 132, 199, 0.12)',
+        dialTickMajor: '#0284C7',
+        dialTickMinor: 'rgba(100, 116, 139, 0.3)',
+        dialTickText: '#334155',
+        arrowColor: '#EA580C',
+        hubColor: '#F59E0B',
+        hubBorder: '#FFFFFF',
+        cardinalN: '#DC2626',
       };
 
   const formattedHeading = heading.toString().padStart(3, '0');
+  const cardinalDirection = getCardinalDirection(heading);
   const allSavedWaypoints = getWaypoints();
   const filteredWaypoints = allSavedWaypoints.filter(
     (wp) =>
@@ -267,28 +458,39 @@ export default function CompassScreen() {
 
   return (
     <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={[styles.container, { backgroundColor: theme.bg }]}>
-      <StatusBar style={nightMode ? 'light' : 'dark'} />
+      <StatusBar style={nightMode ? 'light' : 'dark'} animated={true} />
 
       {/* Screen Header */}
-      <View style={styles.topHeader}>
-        <TouchableOpacity
-          activeOpacity={0.7}
-          onPress={() => router.back()}
-          style={styles.backButton}>
-          <Text style={[styles.backArrow, { color: theme.headerText }]}>‹</Text>
-          <Text style={[styles.backLabel, { color: theme.headerText }]}>Home</Text>
-        </TouchableOpacity>
+      <View style={[styles.topHeader, { backgroundColor: theme.headerBg, borderBottomColor: theme.cardBorder }]}>
+        <BackButton
+          isDark={nightMode}
+          showLabel={true}
+          label="Home"
+          customColor={nightMode ? '#38BDF8' : '#0284C7'}
+        />
 
-        <Text style={[styles.screenTitle, { color: theme.headerText }]}>
-          MARINE COMPASS
-        </Text>
+        <View style={styles.headerTitleWrap}>
+          <Text style={[styles.screenTitle, { color: theme.headerText }]}>
+            MARINE COMPASS
+          </Text>
+          <Text style={[styles.screenSubTitle, { color: theme.headerSub }]}>
+            DGPS GYRO • WGS84
+          </Text>
+        </View>
 
         <TouchableOpacity
           activeOpacity={0.75}
           onPress={() => setNightMode(!nightMode)}
-          style={[styles.nightToggle, { borderColor: theme.cardBorder }]}>
+          style={[
+            styles.nightToggle,
+            {
+              backgroundColor: nightMode ? 'rgba(56, 189, 248, 0.12)' : 'rgba(2, 132, 199, 0.08)',
+              borderColor: theme.cardBorder,
+            },
+          ]}>
+          <Text style={styles.nightToggleIcon}>{nightMode ? '🌙' : '☀️'}</Text>
           <Text style={[styles.nightToggleText, { color: theme.label }]}>
-            {nightMode ? '🌙' : '☀️'}
+            {nightMode ? 'NIGHT' : 'DAY'}
           </Text>
         </TouchableOpacity>
       </View>
@@ -297,13 +499,37 @@ export default function CompassScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         bounces={false}>
+
+        {/* GPS ACCESS PERMISSION PROMPT BANNER (Shown when location is not granted) */}
+        {permissionStatus !== 'granted' && (
+          <View style={[styles.permissionCard, { backgroundColor: nightMode ? 'rgba(239, 68, 68, 0.12)' : 'rgba(239, 68, 68, 0.08)' }]}>
+            <View style={styles.permissionCardTop}>
+              <Text style={styles.permissionCardIcon}>🛰️</Text>
+              <View style={styles.permissionCardTextWrap}>
+                <Text style={styles.permissionCardTitle}>Location Access Required</Text>
+                <Text style={styles.permissionCardDesc}>
+                  Compass ko real mobile sensor se ghumane aur live GPS coordinates ke liye permission allow karein.
+                </Text>
+              </View>
+            </View>
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={handleRequestPermission}
+              style={styles.permissionAllowBtn}>
+              <Text style={styles.permissionAllowBtnText}>📍 Allow Location & Sensors</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* COMPASS DIAL SECTION */}
         <View style={styles.dialWrapper}>
-          {/* Top Lubber Line Indicator (Golden Triangle with live degrees) */}
+          {/* Top Lubber Line Indicator (Golden Precision Arrowhead & Live Heading) */}
           <View style={styles.lubberWrapper}>
             <View style={styles.lubberTriangle} />
             <View style={styles.lubberBadge}>
-              <Text style={styles.lubberDegreeText}>{formattedHeading}°</Text>
+              <Text style={styles.lubberDegreeText}>
+                {formattedHeading}° {cardinalDirection}
+              </Text>
             </View>
           </View>
 
@@ -317,10 +543,17 @@ export default function CompassScreen() {
                 height: DIAL_SIZE,
                 borderRadius: DIAL_RADIUS,
                 borderColor: theme.dialBezel,
+                backgroundColor: theme.dialBg,
                 shadowColor: theme.accent,
               },
             ]}>
-            {/* Rotating Bezel with Degree Ticks & Cardinals */}
+            {/* Background Gyro Reticle Rings (Concentric circles for marine instrument look) */}
+            <View pointerEvents="none" style={[styles.reticleRing, { width: DIAL_SIZE * 0.72, height: DIAL_SIZE * 0.72, borderRadius: (DIAL_SIZE * 0.72) / 2 }]} />
+            <View pointerEvents="none" style={[styles.reticleRing, { width: DIAL_SIZE * 0.44, height: DIAL_SIZE * 0.44, borderRadius: (DIAL_SIZE * 0.44) / 2 }]} />
+            <View pointerEvents="none" style={styles.reticleCrossH} />
+            <View pointerEvents="none" style={styles.reticleCrossV} />
+
+            {/* Rotating Bezel with 36 Graduation Ticks & 12 Precision Cardinals */}
             <Animated.View
               style={[
                 styles.dialFace,
@@ -328,15 +561,15 @@ export default function CompassScreen() {
                   transform: [
                     {
                       rotate: rotationAnim.interpolate({
-                        inputRange: [-7200, 7200],
-                        outputRange: ['-7200deg', '7200deg'],
+                        inputRange: [-360000, 360000],
+                        outputRange: ['-360000deg', '360000deg'],
                       }),
                     },
                   ],
                 },
               ]}>
-              {/* Outer Cyan Ring */}
-              <View style={styles.bezelRing} />
+              {/* Outer Metallic Bezel Ring */}
+              <View style={[styles.bezelRing, { borderColor: theme.dialBezelBorder }]} />
 
               {/* Port (Red) / Starboard (Green) Sectors */}
               <View style={styles.portStarboardRing}>
@@ -344,25 +577,59 @@ export default function CompassScreen() {
                 <View style={styles.redPortArc} />
               </View>
 
-              {/* Cardinal Markers */}
-              <Text style={styles.cardinalN}>N</Text>
-              <Text style={styles.cardinalE}>E  90°</Text>
-              <Text style={styles.cardinalS}>S  180°</Text>
-              <Text style={styles.cardinalW}>270°  W</Text>
+              {/* 36 Circular Graduation Tick Lines */}
+              {Array.from({ length: 36 }).map((_, i) => {
+                const deg = i * 10;
+                const isCardinal = deg % 90 === 0;
+                const isMajor = deg % 30 === 0;
+                return (
+                  <View
+                    key={`tick-${deg}`}
+                    style={[
+                      styles.tickLineWrap,
+                      {
+                        width: DIAL_SIZE,
+                        height: DIAL_SIZE,
+                        transform: [{ rotate: `${deg}deg` }],
+                      },
+                    ]}>
+                    <View
+                      style={[
+                        styles.tickLine,
+                        isCardinal
+                          ? [styles.tickLineCardinal, { backgroundColor: deg === 0 ? '#EF4444' : theme.accent }]
+                          : isMajor
+                          ? [styles.tickLineMajor, { backgroundColor: theme.dialTickMajor }]
+                          : [styles.tickLineMinor, { backgroundColor: theme.dialTickMinor }],
+                      ]}
+                    />
+                  </View>
+                );
+              })}
 
-              {/* Degree numbers matching screenshot */}
-              <Text style={[styles.degLabel, { top: 18, right: 70 }]}>30°</Text>
-              <Text style={[styles.degLabel, { top: 38, right: 38 }]}>45°</Text>
-              <Text style={[styles.degLabel, { top: 72, right: 18 }]}>60°</Text>
-              <Text style={[styles.degLabel, { bottom: 72, right: 18 }]}>120°</Text>
-              <Text style={[styles.degLabel, { bottom: 38, right: 38 }]}>135°</Text>
-              <Text style={[styles.degLabel, { bottom: 18, right: 70 }]}>150°</Text>
-              <Text style={[styles.degLabel, { bottom: 18, left: 70 }]}>210°</Text>
-              <Text style={[styles.degLabel, { bottom: 38, left: 38 }]}>225°</Text>
-              <Text style={[styles.degLabel, { bottom: 72, left: 18 }]}>240°</Text>
-              <Text style={[styles.degLabel, { top: 72, left: 18 }]}>300°</Text>
-              <Text style={[styles.degLabel, { top: 38, left: 38 }]}>315°</Text>
-              <Text style={[styles.degLabel, { top: 18, left: 70 }]}>330°</Text>
+              {/* 12 Mathematical Degree & Cardinal Labels (Kept Perfectly Upright) */}
+              {DIAL_LABELS.map((item) => {
+                const angleRad = ((item.deg - 90) * Math.PI) / 180;
+                const labelR = DIAL_RADIUS - 30;
+                const left = DIAL_RADIUS + labelR * Math.cos(angleRad) - 18;
+                const top = DIAL_RADIUS + labelR * Math.sin(angleRad) - 10;
+                return (
+                  <View key={`lbl-${item.deg}`} style={[styles.dialLabelBox, { left, top }]}>
+                    {item.isNorth && <Text style={styles.northArrowIcon}>▲</Text>}
+                    <Text
+                      style={[
+                        styles.dialLabelText,
+                        item.isNorth
+                          ? styles.northLabelText
+                          : item.isCardinal
+                          ? [styles.cardinalLabelText, { color: theme.accent }]
+                          : [styles.degLabelText, { color: theme.dialTickText }],
+                      ]}>
+                      {item.label}
+                    </Text>
+                  </View>
+                );
+              })}
             </Animated.View>
 
             {/* WAYPOINT TARGET NAVIGATION ARROW (High-Visibility Marine Needle) */}
@@ -375,8 +642,8 @@ export default function CompassScreen() {
                     transform: [
                       {
                         rotate: arrowRotateAnim.interpolate({
-                          inputRange: [-7200, 7200],
-                          outputRange: ['-7200deg', '7200deg'],
+                          inputRange: [-360000, 360000],
+                          outputRange: ['-360000deg', '360000deg'],
                         }),
                       },
                     ],
@@ -389,6 +656,8 @@ export default function CompassScreen() {
                     { borderBottomColor: theme.arrowColor },
                   ]}
                 />
+                <View style={styles.navArrowCenterSpine} />
+
                 {/* Needle Shaft */}
                 <View
                   style={[
@@ -396,10 +665,15 @@ export default function CompassScreen() {
                     { backgroundColor: theme.arrowColor },
                   ]}
                 />
+
+                {/* Needle Tail Counterweight */}
+                <View style={[styles.navArrowTail, { backgroundColor: theme.arrowColor }]} />
+
                 {/* Target Bearing Degree Pip at perimeter */}
                 <View style={[styles.targetPipBadge, { backgroundColor: theme.arrowColor }]}>
-                  <Text style={styles.targetPipText}>★ {targetBearing}°</Text>
+                  <Text style={styles.targetPipText}>🎯 {targetBearing}°</Text>
                 </View>
+
                 {/* Center Nautical Pivot Hub */}
                 <View style={[styles.centerNavHub, { borderColor: theme.hubColor }]}>
                   <View style={[styles.centerNavDot, { backgroundColor: theme.hubColor }]} />
@@ -408,8 +682,17 @@ export default function CompassScreen() {
             ) : (
               /* Center Digital Heading Display when no target active */
               <View style={styles.centerHeadingBox}>
-                <Text style={styles.centerHeadingText}>{formattedHeading}°</Text>
-                <Text style={styles.centerHeadingSub}>STEERING</Text>
+                <Text style={[styles.centerHeadingText, { color: theme.valueBright }]}>
+                  {formattedHeading}°
+                </Text>
+                <View style={[styles.centerCardinalBadge, { backgroundColor: theme.cardBg, borderColor: theme.cardBorder }]}>
+                  <Text style={[styles.centerCardinalText, { color: theme.accent }]}>
+                    {cardinalDirection} • {formattedHeading}°
+                  </Text>
+                </View>
+                <Text style={[styles.centerHeadingSub, { color: theme.label }]}>
+                  GYRO STEERING
+                </Text>
               </View>
             )}
           </View>
@@ -422,7 +705,7 @@ export default function CompassScreen() {
               onPress={handleToggleMute}
               style={[
                 styles.roundActionBtn,
-                { backgroundColor: isMuted ? '#78909C' : '#D32F2F' },
+                { backgroundColor: isMuted ? '#64748B' : '#DC2626' },
               ]}>
               <Text style={styles.roundActionIcon}>{isMuted ? '🔇' : '🔔'}</Text>
             </TouchableOpacity>
@@ -431,7 +714,7 @@ export default function CompassScreen() {
             <TouchableOpacity
               activeOpacity={0.8}
               onPress={handleCancelTarget}
-              style={[styles.roundActionBtn, { backgroundColor: '#C62828' }]}>
+              style={[styles.roundActionBtn, { backgroundColor: '#B91C1C' }]}>
               <Text style={styles.roundActionTextX}>✕</Text>
             </TouchableOpacity>
           </View>
@@ -444,25 +727,55 @@ export default function CompassScreen() {
               styles.steeringBanner,
               isTargetLocked ? styles.steeringLocked : styles.steeringAdjust,
             ]}>
-            <Text style={styles.steeringBannerTitle}>
-              {isTargetLocked
-                ? '🟢 ON COURSE TO TARGET'
-                : relativeSteerDeg > 0
-                ? `👉 STEER STARBOARD +${Math.abs(relativeSteerDeg)}°`
-                : `👈 STEER PORT -${Math.abs(relativeSteerDeg)}°`}
-            </Text>
-            <Text style={styles.steeringBannerSub}>
-              Target: {targetName} ({targetBearing}°) • Distance: {distanceNmi}
-            </Text>
+            <View style={styles.steeringHeaderRow}>
+              <View style={[styles.steeringBadgePill, isTargetLocked ? styles.badgeLocked : styles.badgeAdjust]}>
+                <Text style={styles.steeringBadgeText}>
+                  {isTargetLocked ? '✓ ON COURSE' : relativeSteerDeg > 0 ? '👉 STEER STBD' : '👈 STEER PORT'}
+                </Text>
+              </View>
+              <Text style={[styles.steeringDevText, { color: isTargetLocked ? '#10B981' : '#F59E0B' }]}>
+                {isTargetLocked ? 'DEV: 0° (LOCK)' : `DEV: ${Math.abs(relativeSteerDeg)}°`}
+              </Text>
+            </View>
+
+            {/* Visual Deviation Gauge Bar */}
+            <View style={styles.deviationBarWrap}>
+              <View style={styles.deviationCenterNotch} />
+              <View
+                style={[
+                  styles.deviationIndicator,
+                  {
+                    left: `${Math.max(5, Math.min(95, 50 + (relativeSteerDeg / 45) * 45))}%`,
+                    backgroundColor: isTargetLocked ? '#10B981' : relativeSteerDeg > 0 ? '#10B981' : '#EF4444',
+                  },
+                ]}
+              />
+            </View>
+
+            <View style={styles.steeringMetaRow}>
+              <Text style={[styles.steeringTargetName, { color: theme.valueBright }]} numberOfLines={1}>
+                🎯 {targetName}
+              </Text>
+              <Text style={[styles.steeringDistanceText, { color: theme.accent }]}>
+                {distanceNmi} • {targetBearing}°
+              </Text>
+            </View>
           </View>
         ) : (
           <TouchableOpacity
             onPress={handleOpenWaypointPicker}
             activeOpacity={0.8}
-            style={styles.noTargetBanner}>
-            <Text style={styles.noTargetBannerText}>
-              🎯 NO TARGET ACTIVE • TAP TO SELECT SAVED WAYPOINT
-            </Text>
+            style={[styles.noTargetBanner, { backgroundColor: theme.cardBg, borderColor: theme.cardBorder }]}>
+            <Text style={styles.noTargetBannerIcon}>🎯</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.noTargetBannerTitle, { color: theme.valueBright }]}>
+                Free Steering Mode Active
+              </Text>
+              <Text style={[styles.noTargetBannerSub, { color: theme.label }]}>
+                Tap here to select saved waypoint or enter coordinates
+              </Text>
+            </View>
+            <Text style={[styles.noTargetArrow, { color: theme.accent }]}>›</Text>
           </TouchableOpacity>
         )}
 
@@ -578,7 +891,7 @@ export default function CompassScreen() {
               style={[
                 styles.gridCard,
                 styles.targetCardInteractive,
-                { backgroundColor: theme.cardBg, borderColor: theme.cardBorder },
+                { backgroundColor: theme.cardBg, borderColor: isNavigating && !!targetName ? '#F59E0B' : theme.cardBorder },
               ]}>
               <View style={styles.targetCardHeaderRow}>
                 <Text style={styles.targetCardIcon}>🎯</Text>
@@ -594,7 +907,7 @@ export default function CompassScreen() {
                 ) : null}
               </View>
 
-              <Text style={[styles.targetNameText, { color: theme.value }]} numberOfLines={1}>
+              <Text style={[styles.targetNameText, { color: isNavigating && !!targetName ? '#F59E0B' : theme.value }]} numberOfLines={1}>
                 {targetName || '-- NO TARGET --'}
               </Text>
               <Text style={[styles.cardLabel, { color: theme.label }]}>
@@ -780,36 +1093,57 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingVertical: 8,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
   },
   backButton: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    padding: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
   },
   backArrow: {
-    fontSize: 28,
-    fontWeight: '300',
-    lineHeight: 28,
+    fontSize: 22,
+    fontWeight: '700',
+    lineHeight: 22,
   },
   backLabel: {
-    fontSize: 15,
-    fontWeight: '700',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  headerTitleWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   screenTitle: {
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '900',
-    letterSpacing: 1,
+    letterSpacing: 1.5,
+  },
+  screenSubTitle: {
+    fontSize: 9.5,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+    marginTop: 1,
   },
   nightToggle: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 16,
     borderWidth: 1,
   },
+  nightToggleIcon: {
+    fontSize: 13,
+  },
   nightToggleText: {
-    fontSize: 15,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
   scrollContent: {
     alignItems: 'center',
@@ -819,47 +1153,57 @@ const styles = StyleSheet.create({
   // DIAL SECTION
   dialWrapper: {
     alignItems: 'center',
-    marginTop: 10,
-    marginBottom: 8,
+    marginTop: 14,
+    marginBottom: 16,
     position: 'relative',
   },
   lubberWrapper: {
     alignItems: 'center',
-    marginBottom: -10,
-    zIndex: 30,
+    marginBottom: -8,
+    zIndex: 35,
   },
   lubberTriangle: {
     width: 0,
     height: 0,
-    borderLeftWidth: 14,
-    borderRightWidth: 14,
-    borderTopWidth: 20,
+    borderLeftWidth: 12,
+    borderRightWidth: 12,
+    borderTopWidth: 16,
     borderLeftColor: 'transparent',
     borderRightColor: 'transparent',
-    borderTopColor: '#FFB300',
+    borderTopColor: '#F59E0B',
+    shadowColor: '#F59E0B',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.6,
+    shadowRadius: 4,
+    elevation: 5,
   },
   lubberBadge: {
-    backgroundColor: '#FFB300',
-    paddingHorizontal: 10,
-    paddingVertical: 2,
-    borderRadius: 6,
-    marginTop: -4,
+    backgroundColor: '#F59E0B',
+    paddingHorizontal: 12,
+    paddingVertical: 3,
+    borderRadius: 8,
+    marginTop: -3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3,
+    elevation: 4,
   },
   lubberDegreeText: {
     color: '#000000',
     fontSize: 13,
     fontWeight: '900',
+    letterSpacing: 0.5,
   },
   dialFrame: {
-    borderWidth: 3.5,
+    borderWidth: 4,
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
-    backgroundColor: 'rgba(255, 255, 255, 0.9)',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 10,
-    elevation: 8,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25,
+    shadowRadius: 14,
+    elevation: 10,
   },
   dialFace: {
     width: '100%',
@@ -873,15 +1217,15 @@ const styles = StyleSheet.create({
     width: '92%',
     height: '92%',
     borderRadius: 9999,
-    borderWidth: 2,
-    borderColor: '#00E5FF',
+    borderWidth: 1.5,
   },
   portStarboardRing: {
     position: 'absolute',
-    width: '82%',
-    height: '82%',
+    width: '84%',
+    height: '84%',
     borderRadius: 9999,
     overflow: 'hidden',
+    opacity: 0.85,
   },
   greenStarboardArc: {
     position: 'absolute',
@@ -889,8 +1233,8 @@ const styles = StyleSheet.create({
     top: 0,
     bottom: 0,
     width: '50%',
-    borderRightWidth: 3,
-    borderColor: '#00E676',
+    borderRightWidth: 3.5,
+    borderColor: '#10B981',
   },
   redPortArc: {
     position: 'absolute',
@@ -898,42 +1242,75 @@ const styles = StyleSheet.create({
     top: 0,
     bottom: 0,
     width: '50%',
-    borderLeftWidth: 3,
-    borderColor: '#FF5252',
+    borderLeftWidth: 3.5,
+    borderColor: '#EF4444',
   },
-  cardinalN: {
+  reticleRing: {
     position: 'absolute',
-    top: 10,
-    fontSize: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.16)',
+  },
+  reticleCrossH: {
+    position: 'absolute',
+    width: '68%',
+    height: 1,
+    backgroundColor: 'rgba(56, 189, 248, 0.14)',
+  },
+  reticleCrossV: {
+    position: 'absolute',
+    height: '68%',
+    width: 1,
+    backgroundColor: 'rgba(56, 189, 248, 0.14)',
+  },
+  tickLineWrap: {
+    position: 'absolute',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+  },
+  tickLine: {
+    borderRadius: 1,
+  },
+  tickLineCardinal: {
+    width: 3.5,
+    height: 14,
+  },
+  tickLineMajor: {
+    width: 2,
+    height: 10,
+  },
+  tickLineMinor: {
+    width: 1,
+    height: 6,
+  },
+  dialLabelBox: {
+    position: 'absolute',
+    width: 36,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dialLabelText: {
+    fontSize: 10,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  northArrowIcon: {
+    color: '#EF4444',
+    fontSize: 9,
+    marginBottom: -2,
+  },
+  northLabelText: {
+    color: '#EF4444',
+    fontSize: 13,
     fontWeight: '900',
-    color: '#00B0FF',
   },
-  cardinalE: {
-    position: 'absolute',
-    right: 12,
-    fontSize: 14,
-    fontWeight: '800',
-    color: '#00B0FF',
+  cardinalLabelText: {
+    fontSize: 12,
+    fontWeight: '900',
   },
-  cardinalS: {
-    position: 'absolute',
-    bottom: 12,
-    fontSize: 14,
-    fontWeight: '800',
-    color: '#00B0FF',
-  },
-  cardinalW: {
-    position: 'absolute',
-    left: 12,
-    fontSize: 14,
-    fontWeight: '800',
-    color: '#00B0FF',
-  },
-  degLabel: {
-    position: 'absolute',
+  degLabelText: {
     fontSize: 9.5,
     fontWeight: '700',
-    color: '#00B0FF',
   },
 
   // WAYPOINT NAVIGATION ARROW STYLES (PROMINENT & HIGH-VISIBILITY)
@@ -948,60 +1325,81 @@ const styles = StyleSheet.create({
   navArrowHead: {
     width: 0,
     height: 0,
-    borderLeftWidth: 16,
-    borderRightWidth: 16,
-    borderBottomWidth: 34,
+    borderLeftWidth: 15,
+    borderRightWidth: 15,
+    borderBottomWidth: 36,
     borderLeftColor: 'transparent',
     borderRightColor: 'transparent',
     position: 'absolute',
-    top: 24,
+    top: 22,
     shadowColor: '#000',
-    shadowOpacity: 0.35,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 3,
-    elevation: 4,
+    shadowOpacity: 0.4,
+    shadowOffset: { width: 0, height: 3 },
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  navArrowCenterSpine: {
+    position: 'absolute',
+    top: 24,
+    width: 2,
+    height: 34,
+    backgroundColor: 'rgba(255, 255, 255, 0.4)',
+    zIndex: 2,
   },
   navArrowShaft: {
-    width: 8,
-    height: 72,
-    borderRadius: 4,
+    width: 6,
+    height: 74,
+    borderRadius: 3,
     position: 'absolute',
-    top: 48,
+    top: 50,
     shadowColor: '#000',
     shadowOpacity: 0.3,
     shadowOffset: { width: 0, height: 2 },
     shadowRadius: 2,
     elevation: 3,
+  },
+  navArrowTail: {
+    position: 'absolute',
+    bottom: 52,
+    width: 14,
+    height: 14,
+    transform: [{ rotate: '45deg' }],
+    borderRadius: 2,
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 2,
+    elevation: 2,
   },
   targetPipBadge: {
     position: 'absolute',
-    top: 6,
-    paddingHorizontal: 6,
+    top: 4,
+    paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: 6,
     shadowColor: '#000',
-    shadowOpacity: 0.3,
-    shadowRadius: 2,
-    elevation: 3,
+    shadowOpacity: 0.35,
+    shadowRadius: 3,
+    elevation: 4,
   },
   targetPipText: {
     color: '#FFFFFF',
     fontSize: 10,
     fontWeight: '900',
+    letterSpacing: 0.5,
   },
   centerNavHub: {
     position: 'absolute',
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     backgroundColor: '#FFFFFF',
-    borderWidth: 3,
+    borderWidth: 3.5,
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000',
-    shadowOpacity: 0.3,
-    shadowRadius: 3,
-    elevation: 5,
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
+    elevation: 6,
   },
   centerNavDot: {
     width: 12,
@@ -1016,110 +1414,257 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   centerHeadingText: {
-    fontSize: 32,
+    fontSize: 34,
     fontWeight: '900',
-    color: '#102A43',
-    letterSpacing: 1,
+    letterSpacing: 1.5,
+  },
+  centerCardinalBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    borderWidth: 1,
+    marginTop: 2,
+  },
+  centerCardinalText: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.8,
   },
   centerHeadingSub: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '800',
+    marginTop: 3,
+    letterSpacing: 1.2,
+  },
+
+  // Location Permission Card
+  permissionCard: {
+    marginHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 10,
+    padding: 14,
+    borderRadius: 14,
+    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+    borderWidth: 1.5,
+    borderColor: '#EF4444',
+  },
+  permissionCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 10,
+  },
+  permissionCardIcon: {
+    fontSize: 26,
+  },
+  permissionCardTextWrap: {
+    flex: 1,
+  },
+  permissionCardTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#EF4444',
+  },
+  permissionCardDesc: {
+    fontSize: 11,
+    fontWeight: '600',
     color: '#64748B',
-    marginTop: -2,
-    letterSpacing: 1,
+    marginTop: 2,
+    lineHeight: 15,
+  },
+  permissionAllowBtn: {
+    backgroundColor: '#0284C7',
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#0284C7',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
+    elevation: 3,
+  },
+  permissionAllowBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
 
   // Dial Bottom Controls (Mute & Cross Cancel)
   dialActionsRow: {
     position: 'absolute',
-    bottom: -10,
-    left: 0,
-    right: 0,
+    bottom: -16,
+    left: 20,
+    right: 20,
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
     zIndex: 40,
   },
   roundActionBtn: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 46,
+    height: 46,
+    borderRadius: 23,
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.4)',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 5,
+    shadowOpacity: 0.35,
+    shadowRadius: 5,
+    elevation: 6,
   },
   roundActionIcon: {
-    fontSize: 22,
+    fontSize: 20,
   },
   roundActionTextX: {
     color: '#FFFFFF',
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '900',
   },
 
   // STEERING GUIDANCE BANNER
   steeringBanner: {
-    width: '90%',
-    paddingVertical: 10,
+    width: '92%',
+    paddingVertical: 12,
     paddingHorizontal: 16,
-    borderRadius: 12,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 18,
-    marginBottom: 8,
+    marginBottom: 10,
     borderWidth: 1.5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+    elevation: 2,
   },
   steeringLocked: {
-    backgroundColor: 'rgba(16, 185, 129, 0.12)',
-    borderColor: '#10B981',
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    borderColor: 'rgba(16, 185, 129, 0.6)',
   },
   steeringAdjust: {
-    backgroundColor: 'rgba(245, 158, 11, 0.12)',
-    borderColor: '#F59E0B',
+    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    borderColor: 'rgba(245, 158, 11, 0.6)',
   },
-  steeringBannerTitle: {
-    fontSize: 14,
+  steeringHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+    marginBottom: 8,
+  },
+  steeringBadgePill: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  badgeLocked: {
+    backgroundColor: '#10B981',
+  },
+  badgeAdjust: {
+    backgroundColor: '#F59E0B',
+  },
+  steeringBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 12,
     fontWeight: '900',
-    color: '#0F172A',
     letterSpacing: 0.5,
   },
-  steeringBannerSub: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#64748B',
-    marginTop: 2,
+  steeringDevText: {
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  deviationBarWrap: {
+    width: '100%',
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: 'rgba(100, 116, 139, 0.2)',
+    position: 'relative',
+    justifyContent: 'center',
+    marginVertical: 4,
+  },
+  deviationCenterNotch: {
+    position: 'absolute',
+    left: '50%',
+    marginLeft: -1,
+    width: 2,
+    height: 12,
+    backgroundColor: '#64748B',
+    borderRadius: 1,
+  },
+  deviationIndicator: {
+    position: 'absolute',
+    width: 14,
+    height: 14,
+    marginLeft: -7,
+    borderRadius: 7,
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.3,
+    shadowRadius: 2,
+    elevation: 3,
+  },
+  steeringMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+    marginTop: 6,
+  },
+  steeringTargetName: {
+    fontSize: 13,
+    fontWeight: '800',
+    flex: 1,
+  },
+  steeringDistanceText: {
+    fontSize: 12,
+    fontWeight: '800',
   },
   noTargetBanner: {
-    width: '90%',
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: 12,
+    width: '92%',
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 16,
     marginTop: 18,
-    marginBottom: 8,
-    backgroundColor: '#F1F5F9',
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
+    marginBottom: 10,
+    borderWidth: 1.5,
     borderStyle: 'dashed',
+    gap: 12,
   },
-  noTargetBannerText: {
-    fontSize: 11,
+  noTargetBannerIcon: {
+    fontSize: 24,
+  },
+  noTargetBannerTitle: {
+    fontSize: 13,
     fontWeight: '800',
-    color: '#475569',
-    textAlign: 'center',
+    letterSpacing: 0.3,
+  },
+  noTargetBannerSub: {
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  noTargetArrow: {
+    fontSize: 22,
+    fontWeight: '700',
   },
 
   // 5 SHORTCUT BUTTONS
   shortcutRow: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
-    width: '90%',
+    justifyContent: 'space-between',
+    width: '92%',
     marginVertical: 14,
+    paddingHorizontal: 6,
   },
   shortcutCircle: {
     width: 52,
@@ -1128,10 +1673,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 3,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 4,
   },
   shortcutIconText: {
     fontSize: 24,
@@ -1159,21 +1704,27 @@ const styles = StyleSheet.create({
   // 2-COLUMN TELEMETRY GRID
   telemetryGrid: {
     width: '92%',
-    gap: 8,
+    gap: 10,
+    marginTop: 4,
   },
   gridRow: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 10,
   },
   gridCard: {
     flex: 1,
-    borderRadius: 14,
+    borderRadius: 16,
     borderWidth: 1.5,
-    paddingVertical: 12,
+    paddingVertical: 14,
     paddingHorizontal: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: 82,
+    minHeight: 86,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 2,
   },
   targetCardInteractive: {
     position: 'relative',

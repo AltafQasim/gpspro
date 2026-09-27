@@ -14,6 +14,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { BackButton } from '@/components/ui/back-button';
 
 interface CatchLogItem {
   id: string;
@@ -98,17 +99,11 @@ export default function MarineCameraScreen() {
 
   return (
     <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={styles.container}>
-      <StatusBar style="light" />
+      <StatusBar style="light" animated={true} />
 
       {/* Screen Header */}
       <View style={styles.topNavRow}>
-        <TouchableOpacity
-          activeOpacity={0.7}
-          onPress={() => router.back()}
-          style={styles.backBtn}>
-          <Text style={styles.backArrow}>‹</Text>
-          <Text style={styles.backText}>Home</Text>
-        </TouchableOpacity>
+        <BackButton isDark={true} showLabel={true} label="Home" />
 
         <Text style={styles.headerTitle}>GEO-STAMPED CATCH LOG</Text>
 

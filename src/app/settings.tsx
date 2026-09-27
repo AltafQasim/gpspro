@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { BackButton } from '@/components/ui/back-button';
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -78,17 +79,11 @@ export default function SettingsScreen() {
 
   return (
     <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={styles.container}>
-      <StatusBar style="dark" />
+      <StatusBar style="dark" animated={true} />
 
       {/* Screen Header */}
       <View style={styles.topHeader}>
-        <TouchableOpacity
-          activeOpacity={0.7}
-          onPress={() => router.back()}
-          style={styles.backBtn}>
-          <Text style={styles.backArrow}>‹</Text>
-          <Text style={styles.backText}>Home</Text>
-        </TouchableOpacity>
+        <BackButton showLabel={true} label="Home" />
 
         <View style={styles.titleRow}>
           <Text style={styles.gearEmoji}>⚙️</Text>

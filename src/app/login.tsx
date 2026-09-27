@@ -49,7 +49,7 @@ export default function LoginScreen() {
 
   return (
     <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={styles.container}>
-      <StatusBar style="light" />
+      <StatusBar style="light" animated={true} />
 
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}

@@ -22,6 +22,7 @@ import {
   setGlobalWaypoints,
 } from '@/services/waypointStore';
 import { VoiceService } from '@/services/voiceService';
+import { BackButton } from '@/components/ui/back-button';
 
 export default function WaypointsScreen() {
   const router = useRouter();
@@ -202,17 +203,11 @@ export default function WaypointsScreen() {
 
   return (
     <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={styles.container}>
-      <StatusBar style="dark" />
+      <StatusBar style="dark" animated={true} />
 
       {/* TOP HEADER BAR (Matching Screenshot) */}
       <View style={styles.topHeader}>
-        <TouchableOpacity
-          activeOpacity={0.7}
-          onPress={() => router.back()}
-          style={styles.backBtn}>
-          <Text style={styles.backArrow}>‹</Text>
-          <Text style={styles.backText}>Home</Text>
-        </TouchableOpacity>
+        <BackButton showLabel={true} label="Home" />
 
         {/* Sort by Button */}
         <TouchableOpacity

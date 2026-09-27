@@ -140,7 +140,7 @@ export default function MarineHomeScreen() {
     <SafeAreaView
       edges={['top', 'left', 'right', 'bottom']}
       style={[styles.safeArea, { backgroundColor: themeColors.background }]}>
-      <StatusBar style={nightMode ? 'light' : 'dark'} />
+      <StatusBar style={nightMode ? 'light' : 'dark'} animated={true} />
 
       <ScrollView
         contentContainerStyle={styles.scrollContent}
