@@ -16,6 +16,14 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { BackButton } from '@/components/ui/back-button';
 import { SettingsStore, SpeechLanguage } from '@/services/settingsStore';
 import { VoiceService } from '@/services/voiceService';
+import { DynamicMoonView } from '@/components/marine/DynamicMoonView';
+import {
+  getMoonPhaseDetails,
+  getSunTimingDetails,
+  getLocalizedTithiName,
+  MoonPhaseInfo,
+  SunTimingInfo,
+} from '@/utils/astronomy';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -25,10 +33,10 @@ export const MOON_RADIUS = MOON_SIZE / 2;
 
 // Ultra-high definition realistic full moon photography (crystal clear, high contrast, craters & Tycho rays)
 const PRIMARY_MOON_IMAGE_URI =
-  'https://images.unsplash.com/photo-1522030299830-16b8d3d049fe?w=1000&auto=format&fit=crop&q=95';
+  'https://upload.wikimedia.org/wikipedia/commons/thumb/e/e1/FullMoon2010.jpg/1024px-FullMoon2010.jpg';
 
 const FALLBACK_MOON_IMAGE_URI =
-  'https://upload.wikimedia.org/wikipedia/commons/thumb/e/e1/FullMoon2010.jpg/1024px-FullMoon2010.jpg';
+  'https://images.unsplash.com/photo-1522030299830-16b8d3d049fe?w=1000&auto=format&fit=crop&q=95';
 
 const REAL_MOON_IMAGE_URI = PRIMARY_MOON_IMAGE_URI;
 
@@ -169,11 +177,28 @@ export const COASTAL_PORTS: CoastalPort[] = [
   },
 ];
 
+// Helper to convert 24h "HH:MM" to 12h "hh:mm AM/PM"
+export function format24to12(timeStr: string): string {
+  if (!timeStr) return '';
+  if (timeStr.includes('AM') || timeStr.includes('PM')) return timeStr;
+  const parts = timeStr.split(':');
+  if (parts.length < 2) return timeStr;
+  let h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  if (isNaN(h) || isNaN(m)) return timeStr;
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  if (h > 12) h -= 12;
+  if (h === 0) h = 12;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')} ${ampm}`;
+}
+
 // Helper to adjust time string by minute offset
 function adjustTimeString(baseTimeStr: string, offsetMinutes: number): string {
-  if (!baseTimeStr || offsetMinutes === 0) return baseTimeStr;
-  const match = baseTimeStr.match(/(\d+):(\d+)\s*(AM|PM)/i);
-  if (!match) return baseTimeStr;
+  if (!baseTimeStr) return baseTimeStr;
+  const time12 = format24to12(baseTimeStr);
+  if (offsetMinutes === 0) return time12;
+  const match = time12.match(/(\d+):(\d+)\s*(AM|PM)/i);
+  if (!match) return time12;
   let hours = parseInt(match[1], 10);
   const minutes = parseInt(match[2], 10);
   const meridiem = match[3].toUpperCase();
@@ -619,10 +644,20 @@ const DAYS_DATA: (CalendarDay | null)[] = [
 ];
 
 // Helper to determine if a date is waxing (Sud paksha) or waning (Vad paksha)
-function isDateWaxing(day: number): boolean {
+export function isDateWaxing(day: number): boolean {
   if (day >= 1 && day <= 11) return true; // Waxing towards Poonam
   if (day >= 27 && day <= 30) return true; // Waxing after Amas
   return false; // Waning (Day 12 to 26)
+}
+
+// Calculate exact astronomical phase (0.0 = New Moon / Amas, 0.5 = Full Moon / Poonam)
+export function getPhaseForDay(day: number, illumination: number): number {
+  const waxing = isDateWaxing(day);
+  if (waxing) {
+    return (illumination / 100) * 0.5;
+  } else {
+    return 0.5 + (1 - illumination / 100) * 0.5;
+  }
 }
 
 export default function CalendarScreen() {
@@ -653,6 +688,7 @@ export default function CalendarScreen() {
     const unsubSettings = SettingsStore.subscribe((s) => {
       setIsNight(SettingsStore.isNightMode());
       setLanguage(s.ttsLang);
+      VoiceService.setLanguage(s.ttsLang);
       setVoiceEnabled(s.voiceAnnounce);
     });
 
@@ -666,13 +702,24 @@ export default function CalendarScreen() {
     };
   }, []);
 
+  // Keep VoiceService in sync whenever local language state changes
+  useEffect(() => {
+    VoiceService.setLanguage(language);
+  }, [language]);
+
   const currentDayData: CalendarDay =
     DAYS_DATA.find((d) => d && d.day === selectedDay) || (DAYS_DATA[12] as CalendarDay);
 
-  const isWaxing = isDateWaxing(selectedDay);
-  const illumination = currentDayData.illumination;
+  // High-precision Marine Astronomical calculation for the selected date
+  const selectedDateObj = new Date(2026, 8, selectedDay, 12, 0, 0);
+  const astroMoon: MoonPhaseInfo = getMoonPhaseDetails(selectedDateObj);
+  const astroSun: SunTimingInfo = getSunTimingDetails(selectedDateObj);
 
-  // Handle Day Selection with Voice Announcement
+  const currentPhase = astroMoon.phase;
+  const isWaxing = astroMoon.isWaxing;
+  const illumination = astroMoon.illumination;
+
+  // Handle Day Selection with Strictly Language-Based Voice Announcement
   const handleSelectDay = (day: number) => {
     const dayItem = DAYS_DATA.find((d) => d && d.day === day);
     if (!dayItem) return;
@@ -680,16 +727,26 @@ export default function CalendarScreen() {
     setSelectedDay(day);
 
     if (voiceEnabled) {
-      VoiceService.announceCalendarDate(
-        `${day} September 2026`,
-        dayItem.tithiName,
-        dayItem.illumination,
-        `${selectedPort.name}: ${dayItem.tideCondition}`
-      );
+      const dayDate = new Date(2026, 8, day, 12, 0, 0);
+      const dayAstro = getMoonPhaseDetails(dayDate);
+      VoiceService.announceCalendarDate({
+        day,
+        tithiName: dayItem.tithiName,
+        tithiNameGu: getLocalizedTithiName(dayItem.tithiName, 'Gujarati'),
+        tithiNameHi: getLocalizedTithiName(dayItem.tithiName, 'Hindi'),
+        illumination: dayAstro.illumination,
+        portNameEn: selectedPort.name,
+        portNameGu: selectedPort.nameGu,
+        portNameHi: selectedPort.nameHi,
+        tideTitleEn: dayAstro.tideTitleEn,
+        tideTitleGu: dayAstro.tideTitleGu,
+        tideTitleHi: dayAstro.tideTitleHi,
+        lang: language,
+      });
     }
   };
 
-  // Tap Moon Voice trigger
+  // Tap Moon Voice trigger (Strictly Language-Based)
   const handleTapMoon = () => {
     if (!voiceEnabled) return;
     const portNameText =
@@ -699,16 +756,31 @@ export default function CalendarScreen() {
         ? selectedPort.nameHi
         : selectedPort.name;
 
-    VoiceService.speak(
+    const phaseText =
       language === 'Gujarati'
-        ? `${portNameText}, ચંદ્ર તેજસ્વીતા: ${currentDayData.illumination} ટકા, ${currentDayData.phaseName}`
+        ? astroMoon.phaseNameGu
         : language === 'Hindi'
-        ? `${portNameText}, चाँद की रोशनी: ${currentDayData.illumination} प्रतिशत, ${currentDayData.phaseName}`
-        : `${portNameText}, Moon Illumination: ${currentDayData.illumination} percent, ${currentDayData.phaseName}`
-    );
+        ? astroMoon.phaseNameHi
+        : astroMoon.phaseNameEn;
+
+    const tideText =
+      language === 'Gujarati'
+        ? astroMoon.tideTitleGu
+        : language === 'Hindi'
+        ? astroMoon.tideTitleHi
+        : astroMoon.tideTitleEn;
+
+    const msg =
+      language === 'Gujarati'
+        ? `${portNameText}, ચંદ્ર તેજસ્વીતા: ${astroMoon.illumination} ટકા, ${phaseText}, ભરતી: ${tideText}, ચંદ્રનું અંતર: ${astroMoon.distanceKm} કિલોમીટર`
+        : language === 'Hindi'
+        ? `${portNameText}, चाँद की रोशनी: ${astroMoon.illumination} प्रतिशत, ${phaseText}, ज्वार: ${tideText}, चाँद की दूरी: ${astroMoon.distanceKm} किलोमीटर`
+        : `${portNameText}, Moon Illumination: ${astroMoon.illumination} percent, ${phaseText}, Tide: ${tideText}, Distance: ${astroMoon.distanceKm} kilometers`;
+
+    VoiceService.speak(msg, language);
   };
 
-  // Port Selection
+  // Port Selection (Strictly Language-Based)
   const handleSelectPort = (port: CoastalPort) => {
     setSelectedPort(port);
     setShowPortModal(false);
@@ -717,13 +789,14 @@ export default function CalendarScreen() {
       const portName =
         language === 'Gujarati' ? port.nameGu : language === 'Hindi' ? port.nameHi : port.name;
 
-      VoiceService.speak(
+      const msg =
         language === 'Gujarati'
           ? `${portName} પસંદ કર્યો. સૂર્ય અને ચંદ્ર સમય ગોઠવાઈ ગયો.`
           : language === 'Hindi'
           ? `${portName} चुना गया। चाँद और सूरज का समय अपडेट हुआ।`
-          : `${port.name} selected. Data synchronized.`
-      );
+          : `${port.name} selected. Data synchronized.`;
+
+      VoiceService.speak(msg, language);
     }
   };
 
@@ -733,21 +806,21 @@ export default function CalendarScreen() {
     return days[idx];
   };
 
-  // Accurate Port Adjusted Astronomical Times
+  // Accurate Port Adjusted Astronomical Times based on dynamic calculations
   const effectiveMoonRise = adjustTimeString(
-    currentDayData.moonRise,
+    astroMoon.moonrise,
     selectedPort.moonOffsetMin + moonRiseOffset
   );
   const effectiveMoonSet = adjustTimeString(
-    currentDayData.moonSet,
+    astroMoon.moonset,
     selectedPort.moonOffsetMin + moonSetOffset
   );
   const effectiveSunRise = adjustTimeString(
-    currentDayData.sunRise,
+    astroSun.sunrise,
     selectedPort.sunOffsetMin
   );
   const effectiveSunSet = adjustTimeString(
-    currentDayData.sunSet,
+    astroSun.sunset,
     selectedPort.sunOffsetMin
   );
 
@@ -785,12 +858,6 @@ export default function CalendarScreen() {
         liveVoiceBg: 'rgba(2, 136, 209, 0.12)',
         liveVoiceBorder: '#0288D1',
       };
-
-  // Astronomical Spherical Curved Terminator Calculations (Physically accurate ellipse)
-  const k = illumination / 100;
-  const s = Math.abs(1 - 2 * k); // 0 at quarter (50%), 1 at new/full moon
-  const safeS = Math.max(0.005, s);
-  const safeInvS = 1 / safeS;
 
   return (
     <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={[styles.container, { backgroundColor: colors.bg }]}>
@@ -833,33 +900,6 @@ export default function CalendarScreen() {
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}>
-
-        {/* LIVE VOICE ANNOUNCEMENT SUBTITLE BAR */}
-        {liveAnnouncement ? (
-          <View
-            style={[
-              styles.liveVoiceBar,
-              { backgroundColor: colors.liveVoiceBg, borderColor: colors.liveVoiceBorder },
-            ]}>
-            <View style={styles.liveVoiceLeft}>
-              <Text style={styles.liveVoiceIcon}>🔊</Text>
-              <View style={styles.liveVoiceTextCol}>
-                <Text style={[styles.liveVoiceTitle, { color: colors.accentBlue }]}>
-                  {language === 'Gujarati' ? 'અવાજ અનાઉન્સમેન્ટ:' : language === 'Hindi' ? 'आवाज़ घोषणा:' : 'Voice Announcement:'}
-                </Text>
-                <Text style={[styles.liveVoiceMessage, { color: colors.textPrimary }]}>
-                  {liveAnnouncement}
-                </Text>
-              </View>
-            </View>
-            <TouchableOpacity
-              activeOpacity={0.75}
-              onPress={() => VoiceService.speak(liveAnnouncement)}
-              style={styles.replayPillBtn}>
-              <Text style={styles.replayPillText}>📢 Repeat</Text>
-            </TouchableOpacity>
-          </View>
-        ) : null}
 
         {/* 1. PORT SELECTION BAR */}
         <TouchableOpacity
@@ -1006,7 +1046,12 @@ export default function CalendarScreen() {
                 2026-09-{selectedDay.toString().padStart(2, '0')} ({getWeekDay(selectedDay)})
               </Text>
               <Text style={[styles.tithiSubTitle, { color: colors.accentBlue }]}>
-                Tithi: {currentDayData.tithiNum} ({currentDayData.tithiName}) • {currentDayData.phaseName}
+                Tithi: {currentDayData.tithiNum} ({currentDayData.tithiName}) •{' '}
+                {language === 'Gujarati'
+                  ? astroMoon.phaseNameGu
+                  : language === 'Hindi'
+                  ? astroMoon.phaseNameHi
+                  : astroMoon.phaseNameEn}
               </Text>
             </View>
 
@@ -1016,212 +1061,129 @@ export default function CalendarScreen() {
                 styles.tideBadge,
                 {
                   backgroundColor:
-                    currentDayData.tideType === 'Juvar'
+                    astroMoon.tideType === 'spring'
                       ? 'rgba(16, 185, 129, 0.15)'
-                      : 'rgba(245, 158, 11, 0.15)',
+                      : astroMoon.tideType === 'neap'
+                      ? 'rgba(245, 158, 11, 0.15)'
+                      : 'rgba(59, 130, 246, 0.15)',
                   borderColor:
-                    currentDayData.tideType === 'Juvar' ? '#10B981' : '#F59E0B',
+                    astroMoon.tideType === 'spring'
+                      ? '#10B981'
+                      : astroMoon.tideType === 'neap'
+                      ? '#F59E0B'
+                      : '#3B82F6',
                 },
               ]}>
               <Text
                 style={[
                   styles.tideBadgeText,
-                  { color: currentDayData.tideType === 'Juvar' ? '#10B981' : '#F59E0B' },
+                  {
+                    color:
+                      astroMoon.tideType === 'spring'
+                        ? '#10B981'
+                        : astroMoon.tideType === 'neap'
+                        ? '#F59E0B'
+                        : '#3B82F6',
+                  },
                 ]}>
-                {currentDayData.tideCondition}
+                {astroMoon.tideType === 'spring' ? 'Juvar (Spring)' : astroMoon.tideType === 'neap' ? 'Bhanj (Neap)' : 'Moderate'}
               </Text>
             </View>
           </View>
 
-          {/* PURE AUTHENTIC REAL MOON - FULL SIZE & EDGE-TO-EDGE CIRCULAR RADIUS */}
+          {/* PURE AUTHENTIC REAL MOON - DYNAMIC MOON VIEW */}
           <View style={styles.moonStageContainer}>
             <TouchableOpacity
               activeOpacity={0.92}
               onPress={handleTapMoon}
               style={styles.pureMoonTouchable}>
-              {/* FIXED RADIUS CIRCULAR DISC CONTAINER (Edge-to-Edge) */}
-              <View style={styles.fixedMoonDiscContainer}>
-                {/* 1. Underlying High-Contrast Lunar Surface (Guarantees immediate zero-latency brightness & texture) */}
-                <View style={styles.moonEarthshineDisc}>
-                  {/* Lunar Maria (Dark Basalt Seas with high natural detail) */}
-                  <View style={[styles.mareDark, { top: MOON_SIZE * 0.16, left: MOON_SIZE * 0.16, width: MOON_SIZE * 0.28, height: MOON_SIZE * 0.30, borderRadius: MOON_SIZE * 0.14 }]} />
-                  <View style={[styles.mareDark, { top: MOON_SIZE * 0.30, right: MOON_SIZE * 0.15, width: MOON_SIZE * 0.30, height: MOON_SIZE * 0.26, borderRadius: MOON_SIZE * 0.13 }]} />
-                  <View style={[styles.mareDark, { top: MOON_SIZE * 0.46, right: MOON_SIZE * 0.20, width: MOON_SIZE * 0.25, height: MOON_SIZE * 0.22, borderRadius: MOON_SIZE * 0.11 }]} />
-                  <View style={[styles.mareDark, { top: MOON_SIZE * 0.42, left: MOON_SIZE * 0.24, width: MOON_SIZE * 0.22, height: MOON_SIZE * 0.20, borderRadius: MOON_SIZE * 0.10 }]} />
-                  {/* Tycho Crater and Radiant Rays */}
-                  <View style={[styles.tychoCraterBody, { bottom: MOON_SIZE * 0.14, left: MOON_SIZE * 0.46 }]}>
-                    <View style={styles.tychoCenterPoint} />
-                  </View>
-                  <View style={[styles.tychoRay, { bottom: MOON_SIZE * 0.15, left: MOON_SIZE * 0.18, width: MOON_SIZE * 0.32, transform: [{ rotate: '-35deg' }] }]} />
-                  <View style={[styles.tychoRay, { bottom: MOON_SIZE * 0.15, left: MOON_SIZE * 0.48, width: MOON_SIZE * 0.35, transform: [{ rotate: '42deg' }] }]} />
-                  <View style={[styles.tychoRay, { bottom: MOON_SIZE * 0.18, left: MOON_SIZE * 0.46, width: MOON_SIZE * 0.38, transform: [{ rotate: '-85deg' }] }]} />
-                  {/* Copernicus Crater */}
-                  <View style={[styles.copernicusCrater, { top: MOON_SIZE * 0.42, left: MOON_SIZE * 0.32 }]}>
-                    <View style={styles.copernicusCore} />
-                  </View>
-                </View>
-
-                {/* 2. Photo & Astronomical 3D Curved Terminator (Waxes & Wanes with True Natural Curves) */}
-                {illumination === 0 ? (
-                  // Amas: 100% full dark shadow with subtle glowing earthshine silhouette
-                  <>
-                    <Image
-                      source={{ uri: moonImgUri }}
-                      style={styles.realMoonPhoto}
-                      contentFit="cover"
-                      priority="high"
-                      cachePolicy="memory-disk"
-                      onError={() => setMoonImgUri(FALLBACK_MOON_IMAGE_URI)}
-                    />
-                    <View style={styles.totalAmasShadow} />
-                  </>
-                ) : illumination >= 99 ? (
-                  // Full Moon: 100% illuminated edge-to-edge with no shadow
-                  <Image
-                    source={{ uri: moonImgUri }}
-                    style={styles.realMoonPhoto}
-                    contentFit="cover"
-                    priority="high"
-                    cachePolicy="memory-disk"
-                    onError={() => setMoonImgUri(FALLBACK_MOON_IMAGE_URI)}
-                  />
-                ) : isWaxing ? (
-                  illumination < 50 ? (
-                    // Waxing Crescent: Lit on right edge, smooth curved shadow covers left half & center ellipse
-                    <>
-                      <Image
-                        source={{ uri: moonImgUri }}
-                        style={styles.realMoonPhoto}
-                        contentFit="cover"
-                        priority="high"
-                        cachePolicy="memory-disk"
-                        onError={() => setMoonImgUri(FALLBACK_MOON_IMAGE_URI)}
-                      />
-                      <View pointerEvents="none" style={styles.terminatorWrapper}>
-                        <View style={[styles.halfShadow, { left: 0 }]} />
-                        <View
-                          style={[
-                            styles.scaledEllipseShadow,
-                            { transform: [{ scaleX: safeS }] },
-                          ]}
-                        />
-                      </View>
-                    </>
-                  ) : (
-                    // Waxing Gibbous: Right half lit + smooth elliptical lit curve bulging into left
-                    <>
-                      {/* Lit Right Half */}
-                      <View style={{ position: 'absolute', top: 0, bottom: 0, right: 0, width: MOON_RADIUS, overflow: 'hidden' }}>
-                        <Image
-                          source={{ uri: moonImgUri }}
-                          style={[styles.realMoonPhoto, { left: undefined, right: 0 }]}
-                          contentFit="cover"
-                          priority="high"
-                          cachePolicy="memory-disk"
-                          onError={() => setMoonImgUri(FALLBACK_MOON_IMAGE_URI)}
-                        />
-                      </View>
-                      {/* Lit Center Ellipse (smooth natural curved bulge to the left) */}
-                      <View
-                        style={{
-                          position: 'absolute',
-                          top: 0,
-                          left: 0,
-                          width: MOON_SIZE,
-                          height: MOON_SIZE,
-                          borderRadius: MOON_RADIUS,
-                          transform: [{ scaleX: safeS }],
-                          overflow: 'hidden',
-                        }}>
-                        <Image
-                          source={{ uri: moonImgUri }}
-                          style={[styles.realMoonPhoto, { transform: [{ scaleX: safeInvS }, { scale: 1.24 }] }]}
-                          contentFit="cover"
-                          priority="high"
-                          cachePolicy="memory-disk"
-                          onError={() => setMoonImgUri(FALLBACK_MOON_IMAGE_URI)}
-                        />
-                      </View>
-                    </>
-                  )
-                ) : (
-                  illumination < 50 ? (
-                    // Waning Crescent: Lit on left edge, smooth curved shadow covers right half & center ellipse
-                    <>
-                      <Image
-                        source={{ uri: moonImgUri }}
-                        style={styles.realMoonPhoto}
-                        contentFit="cover"
-                        priority="high"
-                        cachePolicy="memory-disk"
-                        onError={() => setMoonImgUri(FALLBACK_MOON_IMAGE_URI)}
-                      />
-                      <View pointerEvents="none" style={styles.terminatorWrapper}>
-                        <View style={[styles.halfShadow, { right: 0 }]} />
-                        <View
-                          style={[
-                            styles.scaledEllipseShadow,
-                            { transform: [{ scaleX: safeS }] },
-                          ]}
-                        />
-                      </View>
-                    </>
-                  ) : (
-                    // Waning Gibbous: Left half lit + smooth elliptical lit curve bulging into right
-                    <>
-                      {/* Lit Left Half */}
-                      <View style={{ position: 'absolute', top: 0, bottom: 0, left: 0, width: MOON_RADIUS, overflow: 'hidden' }}>
-                        <Image
-                          source={{ uri: moonImgUri }}
-                          style={[styles.realMoonPhoto, { left: 0 }]}
-                          contentFit="cover"
-                          priority="high"
-                          cachePolicy="memory-disk"
-                          onError={() => setMoonImgUri(FALLBACK_MOON_IMAGE_URI)}
-                        />
-                      </View>
-                      {/* Lit Center Ellipse (smooth natural curved bulge to the right) */}
-                      <View
-                        style={{
-                          position: 'absolute',
-                          top: 0,
-                          left: 0,
-                          width: MOON_SIZE,
-                          height: MOON_SIZE,
-                          borderRadius: MOON_RADIUS,
-                          transform: [{ scaleX: safeS }],
-                          overflow: 'hidden',
-                        }}>
-                        <Image
-                          source={{ uri: moonImgUri }}
-                          style={[styles.realMoonPhoto, { transform: [{ scaleX: safeInvS }, { scale: 1.24 }] }]}
-                          contentFit="cover"
-                          priority="high"
-                          cachePolicy="memory-disk"
-                          onError={() => setMoonImgUri(FALLBACK_MOON_IMAGE_URI)}
-                        />
-                      </View>
-                    </>
-                  )
-                )}
-
-                {/* 3. Constant Circular Glass Rim with Radiant Outer Glow */}
-                <View style={styles.fixedGlassRim} />
-              </View>
+              <DynamicMoonView
+                phase={astroMoon.phase}
+                illumination={astroMoon.illumination}
+                size={MOON_SIZE}
+              />
             </TouchableOpacity>
 
             {/* Illumination & Phase Label */}
             <View style={[styles.moonScalePill, { backgroundColor: colors.pillBg }]}>
               <Text style={[styles.moonScalePillText, { color: colors.textPrimary }]}>
-                🌙 {currentDayData.phaseName.toUpperCase()} •{' '}
+                🌙{' '}
+                {language === 'Gujarati'
+                  ? astroMoon.phaseNameGu.toUpperCase()
+                  : language === 'Hindi'
+                  ? astroMoon.phaseNameHi.toUpperCase()
+                  : astroMoon.phaseNameEn.toUpperCase()}{' '}
+                •{' '}
                 <Text style={{ color: colors.accentCyan, fontWeight: '900' }}>
-                  {currentDayData.illumination}% ILLUMINATED
+                  {astroMoon.illumination}% ILLUMINATED
                 </Text>
               </Text>
             </View>
 
+            {/* Astronomical Moon Metrics: Age, Distance, Size Scale */}
+            <View style={styles.astroMetricsRow}>
+              <View style={[styles.astroMetricChip, { backgroundColor: colors.pillBg }]}>
+                <Text style={[styles.astroMetricLabel, { color: colors.textSecondary }]}>Moon Age</Text>
+                <Text style={[styles.astroMetricValue, { color: colors.textPrimary }]}>
+                  {astroMoon.moonAgeDays}d
+                </Text>
+              </View>
+
+              <View style={[styles.astroMetricChip, { backgroundColor: colors.pillBg }]}>
+                <Text style={[styles.astroMetricLabel, { color: colors.textSecondary }]}>Distance</Text>
+                <Text style={[styles.astroMetricValue, { color: colors.textPrimary }]}>
+                  {astroMoon.distanceKm.toLocaleString()} km
+                </Text>
+              </View>
+
+              <View style={[styles.astroMetricChip, { backgroundColor: colors.pillBg }]}>
+                <Text style={[styles.astroMetricLabel, { color: colors.textSecondary }]}>Scale</Text>
+                <Text style={[styles.astroMetricValue, { color: colors.accentCyan }]}>
+                  {astroMoon.sizeScale}x{astroMoon.distanceKm < 365000 ? ' ⚡Super' : ''}
+                </Text>
+              </View>
+            </View>
+
+            {/* Marine Solunar Tide Advisory Banner */}
+            <View
+              style={[
+                styles.marineTideBanner,
+                {
+                  backgroundColor:
+                    astroMoon.tideType === 'spring'
+                      ? 'rgba(16, 185, 129, 0.12)'
+                      : astroMoon.tideType === 'neap'
+                      ? 'rgba(245, 158, 11, 0.12)'
+                      : 'rgba(59, 130, 246, 0.12)',
+                  borderColor:
+                    astroMoon.tideType === 'spring'
+                      ? '#10B981'
+                      : astroMoon.tideType === 'neap'
+                      ? '#F59E0B'
+                      : '#3B82F6',
+                },
+              ]}>
+              <Text
+                style={[
+                  styles.marineTideBannerTitle,
+                  {
+                    color:
+                      astroMoon.tideType === 'spring'
+                        ? '#10B981'
+                        : astroMoon.tideType === 'neap'
+                        ? '#F59E0B'
+                        : '#3B82F6',
+                  },
+                ]}>
+                ⚡ {astroMoon.tideTitleEn}
+              </Text>
+              <Text style={[styles.marineTideBannerDesc, { color: colors.textSecondary }]}>
+                {astroMoon.tideDescEn}
+              </Text>
+            </View>
+
             <Text style={[styles.tapHintText, { color: colors.textSecondary }]}>
-              Authentic high-definition moon • 3D spherical curved terminator inside fixed radius
+              Astronomical phase: {(astroMoon.phase * 100).toFixed(0)}% • Tap moon for voice announcement
             </Text>
           </View>
         </View>
@@ -1235,7 +1197,7 @@ export default function CalendarScreen() {
                 Sun & Moon Port Ephemeris
               </Text>
               <Text style={[styles.astroCardSub, { color: colors.textSecondary }]}>
-                {selectedPort.name} ({selectedPort.region}) • Accurate Astronomical Data
+                {selectedPort.name} ({selectedPort.region}) • Marine Solunar Data
               </Text>
             </View>
           </View>
@@ -1248,7 +1210,7 @@ export default function CalendarScreen() {
               <Text style={[styles.timeBoxLabel, { color: colors.textSecondary }]}>Sunrise</Text>
               <Text style={[styles.timeBoxVal, { color: colors.textPrimary }]}>{effectiveSunRise}</Text>
               <Text style={[styles.timeBoxSub, { color: colors.textSecondary }]}>
-                {selectedPort.sunOffsetMin === 0 ? 'Base' : `${selectedPort.sunOffsetMin > 0 ? '+' : ''}${selectedPort.sunOffsetMin}m`}
+                Dawn: {format24to12(astroSun.dawn)}
               </Text>
             </View>
 
@@ -1258,7 +1220,7 @@ export default function CalendarScreen() {
               <Text style={[styles.timeBoxLabel, { color: colors.textSecondary }]}>Sunset</Text>
               <Text style={[styles.timeBoxVal, { color: colors.textPrimary }]}>{effectiveSunSet}</Text>
               <Text style={[styles.timeBoxSub, { color: colors.textSecondary }]}>
-                {selectedPort.sunOffsetMin === 0 ? 'Base' : `${selectedPort.sunOffsetMin > 0 ? '+' : ''}${selectedPort.sunOffsetMin}m`}
+                Dusk: {format24to12(astroSun.dusk)}
               </Text>
             </View>
 
@@ -1285,6 +1247,41 @@ export default function CalendarScreen() {
                   : `${selectedPort.moonOffsetMin + moonSetOffset > 0 ? '+' : ''}${selectedPort.moonOffsetMin + moonSetOffset}m`}
               </Text>
             </View>
+          </View>
+
+          {/* Solunar Peak Feeding Transits */}
+          <View style={styles.solunarRow}>
+            <View style={[styles.solunarBox, { backgroundColor: colors.pillBg }]}>
+              <Text style={[styles.solunarBoxTitle, { color: colors.accentBlue }]}>
+                🐟 Overhead Transit
+              </Text>
+              <Text style={[styles.solunarBoxVal, { color: colors.textPrimary }]}>
+                {format24to12(astroMoon.overhead)}
+              </Text>
+              <Text style={[styles.solunarBoxDesc, { color: colors.textSecondary }]}>
+                Major Solunar Feed Peak
+              </Text>
+            </View>
+
+            <View style={[styles.solunarBox, { backgroundColor: colors.pillBg }]}>
+              <Text style={[styles.solunarBoxTitle, { color: colors.accentCyan }]}>
+                ⚓ Underfoot Transit
+              </Text>
+              <Text style={[styles.solunarBoxVal, { color: colors.textPrimary }]}>
+                {format24to12(astroMoon.underfoot)}
+              </Text>
+              <Text style={[styles.solunarBoxDesc, { color: colors.textSecondary }]}>
+                Secondary Feed Window
+              </Text>
+            </View>
+          </View>
+
+          {/* Golden Hour & Daylight Hours */}
+          <View style={[styles.portTideCard, { backgroundColor: colors.pillBg }]}>
+            <Text style={styles.portTideTitle}>☀️ Solar Angle & Daylight:</Text>
+            <Text style={[styles.portTideDesc, { color: colors.textPrimary }]}>
+              Daylight: {astroSun.daylightHours}h {astroSun.daylightMinutes}m • Golden Hour: {format24to12(astroSun.goldenHour)} • Solar Noon: {format24to12(astroSun.solarNoon)} (Angle {astroSun.sunAngleDeg}°)
+            </Text>
           </View>
 
           {/* Port Tidal Characteristics Banner */}
@@ -1453,13 +1450,15 @@ export default function CalendarScreen() {
                     onPress={() => {
                       setLanguage(l);
                       SettingsStore.updateSettings({ ttsLang: l });
+                      VoiceService.setLanguage(l);
                       setShowLangPicker(false);
                       VoiceService.speak(
                         l === 'Gujarati'
                           ? 'ગુજરાતી અવાજ સક્રિય કર્યો'
                           : l === 'Hindi'
                           ? 'हिंदी आवाज़ सक्रिय की गई'
-                          : 'English voice activated'
+                          : 'English voice activated',
+                        l
                       );
                     }}
                     style={[
@@ -1551,50 +1550,6 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     paddingBottom: 40,
     gap: 14,
-  },
-  liveVoiceBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 14,
-    borderWidth: 1.5,
-    gap: 8,
-  },
-  liveVoiceLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    flex: 1,
-  },
-  liveVoiceIcon: {
-    fontSize: 20,
-  },
-  liveVoiceTextCol: {
-    flex: 1,
-    gap: 2,
-  },
-  liveVoiceTitle: {
-    fontSize: 11,
-    fontWeight: '900',
-    letterSpacing: 0.3,
-  },
-  liveVoiceMessage: {
-    fontSize: 12,
-    fontWeight: '700',
-    lineHeight: 16,
-  },
-  replayPillBtn: {
-    backgroundColor: '#0288D1',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 10,
-  },
-  replayPillText: {
-    color: '#FFFFFF',
-    fontSize: 11,
-    fontWeight: '900',
   },
   portBanner: {
     flexDirection: 'row',
@@ -1852,84 +1807,41 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  fixedMoonDiscContainer: {
-    width: MOON_SIZE,
-    height: MOON_SIZE,
-    borderRadius: MOON_RADIUS,
-    backgroundColor: '#030712',
+  moonViewContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
     position: 'relative',
-    overflow: 'hidden',
-    shadowColor: '#FEF08A',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.5,
-    shadowRadius: 24,
-    elevation: 12,
   },
-  moonEarthshineDisc: {
+  moonAtmosphericHalo: {
+    position: 'absolute',
+    shadowOffset: { width: 0, height: 0 },
+    shadowRadius: 18,
+    elevation: 10,
+    backgroundColor: 'transparent',
+  },
+  moonDisk: {
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.6,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  moonImage: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+  },
+  fineLimbRim: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
     bottom: 0,
-    borderRadius: MOON_RADIUS,
-    backgroundColor: '#CBD5E1', // Luminous lunar surface color (instant brightness)
-  },
-  realMoonPhoto: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    width: MOON_SIZE,
-    height: MOON_SIZE,
-    borderRadius: MOON_RADIUS,
-    transform: [{ scale: 1.24 }], // Scale tightly so moon disk touches the outer circular boundary 100%
-  },
-  mareDark: {
-    position: 'absolute',
-    backgroundColor: '#64748B',
-    opacity: 0.65,
-  },
-  tychoCraterBody: {
-    position: 'absolute',
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1.5,
-    borderColor: '#94A3B8',
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#FFFFFF',
-    shadowOpacity: 0.8,
-    shadowRadius: 6,
-  },
-  tychoCenterPoint: {
-    width: 4,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: '#E2E8F0',
-  },
-  tychoRay: {
-    position: 'absolute',
-    height: 1.8,
-    backgroundColor: '#FFFFFF',
-    opacity: 0.7,
-  },
-  copernicusCrater: {
-    position: 'absolute',
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1.5,
-    borderColor: '#64748B',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  copernicusCore: {
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
-    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
   },
   totalAmasShadow: {
     position: 'absolute',
@@ -1938,7 +1850,7 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     borderRadius: MOON_RADIUS,
-    backgroundColor: 'rgba(5, 8, 18, 0.95)',
+    backgroundColor: 'rgba(4, 7, 17, 0.95)',
   },
   terminatorWrapper: {
     position: 'absolute',
@@ -1949,21 +1861,67 @@ const styles = StyleSheet.create({
     borderRadius: MOON_RADIUS,
     overflow: 'hidden',
   },
-  halfShadow: {
+  leftHalfShadow: {
     position: 'absolute',
     top: 0,
     bottom: 0,
+    left: 0,
     width: MOON_RADIUS,
-    backgroundColor: 'rgba(5, 8, 18, 0.88)',
+    backgroundColor: '#040711',
   },
-  scaledEllipseShadow: {
+  rightCrescentShadow: {
     position: 'absolute',
     top: 0,
+    bottom: 0,
+    left: MOON_RADIUS,
+    backgroundColor: '#040711',
+  },
+  rightHalfShadow: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    right: 0,
+    width: MOON_RADIUS,
+    backgroundColor: '#040711',
+  },
+  leftCrescentShadow: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    right: MOON_RADIUS,
+    backgroundColor: '#040711',
+  },
+  leftHalfShadowContainer: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
     left: 0,
-    width: MOON_SIZE,
-    height: MOON_SIZE,
-    borderRadius: MOON_RADIUS,
-    backgroundColor: 'rgba(5, 8, 18, 0.88)',
+    width: MOON_RADIUS,
+    backgroundColor: '#040711',
+    overflow: 'hidden',
+  },
+  leftBulgeLitContainer: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    right: 0,
+    overflow: 'hidden',
+  },
+  rightHalfShadowContainer: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    right: 0,
+    width: MOON_RADIUS,
+    backgroundColor: '#040711',
+    overflow: 'hidden',
+  },
+  rightBulgeLitContainer: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
+    overflow: 'hidden',
   },
   fixedGlassRim: {
     position: 'absolute',
@@ -1973,7 +1931,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     borderRadius: MOON_RADIUS,
     borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.45)',
+    borderColor: 'rgba(255, 255, 255, 0.35)',
   },
   moonScalePill: {
     paddingHorizontal: 16,
@@ -1992,6 +1950,73 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     textAlign: 'center',
     fontStyle: 'italic',
+  },
+  astroMetricsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: '100%',
+    gap: 8,
+  },
+  astroMetricChip: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+    borderRadius: 12,
+  },
+  astroMetricLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  astroMetricValue: {
+    fontSize: 13,
+    fontWeight: '900',
+    marginTop: 2,
+  },
+  marineTideBanner: {
+    width: '100%',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    gap: 4,
+  },
+  marineTideBannerTitle: {
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 0.3,
+  },
+  marineTideBannerDesc: {
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: '500',
+  },
+  solunarRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 4,
+  },
+  solunarBox: {
+    flex: 1,
+    padding: 10,
+    borderRadius: 12,
+    gap: 2,
+  },
+  solunarBoxTitle: {
+    fontSize: 10,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  solunarBoxVal: {
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  solunarBoxDesc: {
+    fontSize: 10,
+    fontWeight: '500',
   },
   astroCard: {
     borderRadius: 18,

@@ -3,6 +3,7 @@ import { StatusBar } from 'expo-status-bar';
 import React, { useEffect, useState } from 'react';
 import {
   Alert,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -847,12 +848,16 @@ export default function WaypointsScreen() {
 
       {/* EDIT / CREATE WAYPOINT MODAL */}
       <Modal visible={modalVisible} transparent animationType="slide">
-        <TouchableWithoutFeedback onPress={() => setModalVisible(false)}>
+        <TouchableWithoutFeedback
+          onPress={() => {
+            Keyboard.dismiss();
+            setModalVisible(false);
+          }}>
           <View style={styles.modalOverlay}>
             <KeyboardAvoidingView
-              behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
               style={styles.modalKeyboardAvoid}>
-              <TouchableWithoutFeedback>
+              <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
                 <View style={styles.modalContent}>
                   {/* Drag Handle Bar */}
                   <View style={styles.modalHandleBar} />
@@ -878,7 +883,10 @@ export default function WaypointsScreen() {
                     </View>
 
                     <TouchableOpacity
-                      onPress={() => setModalVisible(false)}
+                      onPress={() => {
+                        Keyboard.dismiss();
+                        setModalVisible(false);
+                      }}
                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                       style={styles.modalCloseCircle}>
                       <ModernCloseIcon size={13} color="#64748B" />
@@ -888,19 +896,46 @@ export default function WaypointsScreen() {
                   <ScrollView
                     showsVerticalScrollIndicator={false}
                     contentContainerStyle={styles.modalScrollBody}
-                    keyboardShouldPersistTaps="handled">
-                    {/* NAME INPUT BOX */}
+                    keyboardShouldPersistTaps="handled"
+                    keyboardDismissMode="on-drag">
+                    {/* NAME INPUT BOX WITH INLINE SAVE BUTTON */}
                     <View style={styles.formSection}>
-                      <Text style={styles.formLabel}>WAYPOINT NAME</Text>
-                      <View style={styles.nameInputContainer}>
-                        <ModernTagIcon size={16} color="#3B82F6" />
-                        <TextInput
-                          value={formName}
-                          onChangeText={setFormName}
-                          placeholder="e.g. Sagar Kripa Spot"
-                          placeholderTextColor="#94A3B8"
-                          style={styles.nameTextInput}
-                        />
+                      <View style={styles.nameHeaderRow}>
+                        <Text style={styles.formLabel}>WAYPOINT NAME</Text>
+                        <View style={styles.quickSaveBadge}>
+                          <Text style={styles.quickSaveBadgeText}>Quick Save</Text>
+                        </View>
+                      </View>
+
+                      <View style={styles.nameInputRow}>
+                        <View style={styles.nameInputContainer}>
+                          <ModernTagIcon size={16} color="#3B82F6" />
+                          <TextInput
+                            value={formName}
+                            onChangeText={setFormName}
+                            placeholder="e.g. Sagar Kripa Spot"
+                            placeholderTextColor="#94A3B8"
+                            style={styles.nameTextInput}
+                            returnKeyType="done"
+                            onSubmitEditing={handleSave}
+                          />
+                          {formName.trim().length > 0 && (
+                            <TouchableOpacity
+                              onPress={() => setFormName('')}
+                              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                              style={styles.clearNameBtn}>
+                              <ModernCloseIcon size={11} color="#94A3B8" />
+                            </TouchableOpacity>
+                          )}
+                        </View>
+
+                        <TouchableOpacity
+                          activeOpacity={0.82}
+                          onPress={handleSave}
+                          style={styles.inlineNameSaveBtn}>
+                          <ModernCheckIcon size={15} color="#FFFFFF" />
+                          <Text style={styles.inlineNameSaveBtnText}>Save</Text>
+                        </TouchableOpacity>
                       </View>
                     </View>
 
@@ -1093,7 +1128,10 @@ export default function WaypointsScreen() {
                   <View style={styles.modalButtonsRow}>
                     <TouchableOpacity
                       activeOpacity={0.8}
-                      onPress={() => setModalVisible(false)}
+                      onPress={() => {
+                        Keyboard.dismiss();
+                        setModalVisible(false);
+                      }}
                       style={styles.cancelBtn}>
                       <Text style={styles.cancelBtnText}>Cancel</Text>
                     </TouchableOpacity>
@@ -1684,10 +1722,12 @@ const styles = StyleSheet.create({
   },
   modalKeyboardAvoid: {
     width: '100%',
-    maxHeight: '92%',
+    maxHeight: '94%',
+    justifyContent: 'flex-end',
   },
   modalContent: {
     width: '100%',
+    maxHeight: '100%',
     backgroundColor: '#FFFFFF',
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
@@ -1752,7 +1792,7 @@ const styles = StyleSheet.create({
   },
   modalScrollBody: {
     paddingTop: 16,
-    paddingBottom: 14,
+    paddingBottom: 20,
     gap: 16,
   },
 
@@ -1766,7 +1806,33 @@ const styles = StyleSheet.create({
     color: '#64748B',
     letterSpacing: 0.6,
   },
+  nameHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 2,
+  },
+  quickSaveBadge: {
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+  },
+  quickSaveBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#1D4ED8',
+    letterSpacing: 0.3,
+  },
+  nameInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   nameInputContainer: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#F8FAFC',
@@ -1774,7 +1840,7 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: '#E2E8F0',
     paddingHorizontal: 12,
-    paddingVertical: Platform.OS === 'ios' ? 12 : 8,
+    height: 48,
     gap: 8,
   },
   nameTextInput: {
@@ -1782,6 +1848,36 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
     color: '#0F172A',
+    height: '100%',
+  },
+  clearNameBtn: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#E2E8F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  inlineNameSaveBtn: {
+    height: 48,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    backgroundColor: '#1D4ED8',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    shadowColor: '#1D4ED8',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  inlineNameSaveBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
+    letterSpacing: 0.3,
   },
 
   // COORDINATE CARD

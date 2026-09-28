@@ -44,6 +44,14 @@ export const DEFAULT_SETTINGS: AppSettings = {
 let currentSettings: AppSettings = { ...DEFAULT_SETTINGS };
 const settingsListeners = new Set<(settings: AppSettings) => void>();
 
+// Synchronize VoiceService on initialization
+try {
+  VoiceService.setLanguage(currentSettings.ttsLang);
+  VoiceService.setEnabled(currentSettings.voiceAnnounce);
+} catch {
+  // Graceful
+}
+
 // Local storage key for web persistence
 const SETTINGS_STORAGE_KEY = 'gps_fishing_pro_settings_v1';
 
