@@ -1,21 +1,20 @@
+import { BackButton } from '@/components/ui/back-button';
+import { SettingsStore } from '@/services/settingsStore';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import React, { useState } from 'react';
+import { useState } from 'react';
 import {
   Alert,
   Modal,
-  Platform,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   TouchableWithoutFeedback,
-  View,
+  View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { BackButton } from '@/components/ui/back-button';
-import { SettingsStore } from '@/services/settingsStore';
 
 interface TrackItem {
   id: number;

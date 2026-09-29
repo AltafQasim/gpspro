@@ -1,9 +1,9 @@
+import { BackButton } from '@/components/ui/back-button';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import React, { useState } from 'react';
+import { useState } from 'react';
 import {
   Alert,
-  Dimensions,
   Modal,
   ScrollView,
   StyleSheet,
@@ -11,10 +11,9 @@ import {
   TextInput,
   TouchableOpacity,
   TouchableWithoutFeedback,
-  View,
+  View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { BackButton } from '@/components/ui/back-button';
 
 interface CatchLogItem {
   id: string;

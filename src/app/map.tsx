@@ -18,8 +18,8 @@ import {
   GpsService,
   calculateNavDistanceAndBearing,
 } from '@/services/gpsService';
-import { VoiceService } from '@/services/voiceService';
 import { SettingsStore } from '@/services/settingsStore';
+import { VoiceService } from '@/services/voiceService';
 import {
   WaypointItem,
   getActiveTarget,
@@ -31,12 +31,11 @@ import {
 import { Image } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Animated,
   Dimensions,
-  Easing,
   Modal,
   PanResponder,
   Platform,
@@ -44,7 +43,7 @@ import {
   Text,
   TouchableOpacity,
   TouchableWithoutFeedback,
-  View,
+  View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -704,8 +703,8 @@ export default function MarineMapScreen() {
             {activeLayer === 'openstreet'
               ? 'OpenStreetMap'
               : activeLayer === 'satellite'
-              ? 'Satellite Map'
-              : 'Nautical Bathymetry'}
+                ? 'Satellite Map'
+                : 'Nautical Bathymetry'}
           </Text>
           <Text style={styles.layerDropdownArrow}>▼</Text>
         </TouchableOpacity>
@@ -762,17 +761,17 @@ export default function MarineMapScreen() {
           activeLayer === 'satellite'
             ? { backgroundColor: '#0B192C' }
             : activeLayer === 'nautical'
-            ? { backgroundColor: '#BFE5EC' }
-            : { backgroundColor: '#AAD3DF' },
+              ? { backgroundColor: '#BFE5EC' }
+              : { backgroundColor: '#AAD3DF' },
         ]}
         {...panResponder.panHandlers}
         {...(Platform.OS === 'web'
           ? {
-              onMouseDown: handleWebMouseDown,
-              onWheel: handleWebWheel,
-            }
+            onMouseDown: handleWebMouseDown,
+            onWheel: handleWebWheel,
+          }
           : {})}>
-        
+
         {/* Unified Hardware-Accelerated Dynamic Map Canvas (Tiles + Waypoints + Vessel + Routes all scale together!) */}
         <Animated.View
           style={[
@@ -782,17 +781,17 @@ export default function MarineMapScreen() {
                 { scale: pinchScaleAnim },
                 !northUp
                   ? {
-                      rotate: boatRotateAnim.interpolate({
-                        inputRange: [-360000, 360000],
-                        outputRange: ['360000deg', '-360000deg'],
-                      }),
-                    }
+                    rotate: boatRotateAnim.interpolate({
+                      inputRange: [-360000, 360000],
+                      outputRange: ['360000deg', '-360000deg'],
+                    }),
+                  }
                   : { rotate: '0deg' },
               ],
             },
           ]}
           pointerEvents="box-none">
-          
+
           {/* Dynamic Slippy Map Tiles Layer (Instant loading transition=0, zero bounce) */}
           <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
             {tiles.map((tile) => (
@@ -815,7 +814,7 @@ export default function MarineMapScreen() {
               />
             ))}
           </View>
-          
+
           {/* Recorded GPS Breadcrumbs Trail */}
           {trackHistory.map((pt, i) => {
             const ptWorld = latLonToWorld(pt.lat, pt.lon, tileZoom);
@@ -1537,10 +1536,10 @@ const styles = StyleSheet.create({
     position: 'relative',
     ...(Platform.OS === 'web'
       ? {
-          userSelect: 'none' as const,
-          touchAction: 'none' as const,
-          cursor: 'grab' as const,
-        }
+        userSelect: 'none' as const,
+        touchAction: 'none' as const,
+        cursor: 'grab' as const,
+      }
       : {}),
   },
   mapContentLayer: {

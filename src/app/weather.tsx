@@ -1,7 +1,11 @@
+import { BackButton } from '@/components/ui/back-button';
+import { MARINE_PORTS_DATABASE, MarinePortInfo } from '@/services/marineData';
+import { SettingsStore } from '@/services/settingsStore';
+import { VoiceService } from '@/services/voiceService';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as WebBrowser from 'expo-web-browser';
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Alert,
   Dimensions,
@@ -16,10 +20,6 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { BackButton } from '@/components/ui/back-button';
-import { SettingsStore } from '@/services/settingsStore';
-import { MARINE_PORTS_DATABASE, MarinePortInfo } from '@/services/marineData';
-import { VoiceService } from '@/services/voiceService';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -48,29 +48,29 @@ export default function SeaWeatherScreen() {
 
   const colors = isNight
     ? {
-        bg: '#0A0F1D',
-        cardBg: '#111827',
-        cardBorder: '#1F2937',
-        headerBg: '#0F172A',
-        headerBorder: '#1E293B',
-        textPrimary: '#F8FAFC',
-        textSecondary: '#94A3B8',
-        accentCyan: '#00E5FF',
-        accentBlue: '#0288D1',
-        pillBg: '#1E293B',
-      }
+      bg: '#0A0F1D',
+      cardBg: '#111827',
+      cardBorder: '#1F2937',
+      headerBg: '#0F172A',
+      headerBorder: '#1E293B',
+      textPrimary: '#F8FAFC',
+      textSecondary: '#94A3B8',
+      accentCyan: '#00E5FF',
+      accentBlue: '#0288D1',
+      pillBg: '#1E293B',
+    }
     : {
-        bg: '#F8FAFC',
-        cardBg: '#FFFFFF',
-        cardBorder: '#E2E8F0',
-        headerBg: '#FFFFFF',
-        headerBorder: '#E2E8F0',
-        textPrimary: '#0F172A',
-        textSecondary: '#64748B',
-        accentCyan: '#00838F',
-        accentBlue: '#0288D1',
-        pillBg: '#F1F5F9',
-      };
+      bg: '#F8FAFC',
+      cardBg: '#FFFFFF',
+      cardBorder: '#E2E8F0',
+      headerBg: '#FFFFFF',
+      headerBorder: '#E2E8F0',
+      textPrimary: '#0F172A',
+      textSecondary: '#64748B',
+      accentCyan: '#00838F',
+      accentBlue: '#0288D1',
+      pillBg: '#F1F5F9',
+    };
 
   // Open Windy.com for high-res marine radar calibrated to port coordinates
   const handleOpenWindy = async () => {
@@ -238,20 +238,20 @@ export default function SeaWeatherScreen() {
                     ? speechLang === 'Gujarati'
                       ? 'અવાજ બંધ કરો (Stop)'
                       : speechLang === 'Hindi'
-                      ? 'आवाज़ बंद करें (Stop)'
-                      : 'Stop Voice Announcement'
+                        ? 'आवाज़ बंद करें (Stop)'
+                        : 'Stop Voice Announcement'
                     : speechLang === 'Gujarati'
-                    ? 'હવામાન જાહેરાત સાંભળો (Voice Announcement)'
-                    : speechLang === 'Hindi'
-                    ? 'मौसम घोषणा सुनें (Voice Announcement)'
-                    : 'Listen Weather Announcement'}
+                      ? 'હવામાન જાહેરાત સાંભળો (Voice Announcement)'
+                      : speechLang === 'Hindi'
+                        ? 'मौसम घोषणा सुनें (Voice Announcement)'
+                        : 'Listen Weather Announcement'}
                 </Text>
                 <Text style={styles.voiceHeroSubTitle}>
                   {speechLang === 'Gujarati'
                     ? 'ભાષા: ગુજરાતી (ડિફોલ્ટ)'
                     : speechLang === 'Hindi'
-                    ? 'भाषा: हिंदी'
-                    : 'Language: English'}
+                      ? 'भाषा: हिंदी'
+                      : 'Language: English'}
                 </Text>
               </View>
             </View>

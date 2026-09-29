@@ -70,8 +70,8 @@ if (typeof window !== 'undefined' && window.localStorage) {
         VoiceService.setEnabled(currentSettings.voiceAnnounce);
       }
     }
-  } catch (err) {
-    console.warn('Failed to load settings from storage:', err);
+  } catch {
+    // Silently fall back to default settings
   }
 }
 
@@ -110,8 +110,8 @@ export class SettingsStore {
     if (typeof window !== 'undefined' && window.localStorage) {
       try {
         window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(currentSettings));
-      } catch (err) {
-        console.warn('Failed to save settings:', err);
+      } catch {
+        // Silently ignore storage errors
       }
     }
 
@@ -119,8 +119,8 @@ export class SettingsStore {
     settingsListeners.forEach((fn) => {
       try {
         fn(currentSettings);
-      } catch (err) {
-        console.error('Error in settings listener:', err);
+      } catch {
+        // Silently suppress listener errors
       }
     });
   }

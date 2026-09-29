@@ -1,5 +1,6 @@
+import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Platform,
@@ -10,18 +11,20 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
 
 import { CoordinatesCard } from '@/components/marine/CoordinatesCard';
 import { FeatureModal } from '@/components/marine/FeatureModal';
 import { NavGrid } from '@/components/marine/NavGrid';
 import { PremiumButton } from '@/components/marine/PremiumButton';
+import { PremiumUpgradeModal } from '@/components/marine/PremiumUpgradeModal';
+import { INITIAL_SATELLITES } from '@/components/marine/satelliteData';
 import { SatelliteRadar } from '@/components/marine/SatelliteRadar';
 import { MarineFeatureId, Satellite } from '@/components/marine/types';
-import { INITIAL_SATELLITES } from '@/components/marine/satelliteData';
+import { AuthStore } from '@/services/authStore';
 import { DeviceStatusService } from '@/services/deviceStatusService';
 import { GpsService, LocationTelemetry } from '@/services/gpsService';
 import { SettingsStore } from '@/services/settingsStore';
+import { SubscriptionStore } from '@/services/subscriptionStore';
 
 export default function MarineHomeScreen() {
   const router = useRouter();
@@ -29,6 +32,32 @@ export default function MarineHomeScreen() {
   const [activeModal, setActiveModal] = useState<MarineFeatureId | 'satellite' | 'coordinates' | null>(null);
   const [modalTitle, setModalTitle] = useState<string>('');
   const [selectedSat, setSelectedSat] = useState<Satellite | null>(null);
+
+  // Paywall & Subscription Lockout State
+  const [isAccessAllowed, setIsAccessAllowed] = useState<boolean>(() => SubscriptionStore.isAccessAllowed());
+  const [premiumModalVisible, setPremiumModalVisible] = useState<boolean>(() => !SubscriptionStore.isAccessAllowed());
+
+  // Auth state for Top Status Bar
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(AuthStore.isLoggedIn());
+  const [userPhone, setUserPhone] = useState<string | null>(AuthStore.getPhone());
+
+  useEffect(() => {
+    const unsubAuth = AuthStore.subscribe((auth) => {
+      setIsLoggedIn(auth.isLoggedIn);
+      setUserPhone(auth.phoneNumber);
+    });
+    const unsubSub = SubscriptionStore.subscribe(() => {
+      const allowed = SubscriptionStore.isAccessAllowed();
+      setIsAccessAllowed(allowed);
+      if (!allowed) {
+        setPremiumModalVisible(true);
+      }
+    });
+    return () => {
+      unsubAuth();
+      unsubSub();
+    };
+  }, []);
 
   // Live Mobile Compass & Gyro Sensor Telemetry
   const [heading, setHeading] = useState<number>(354);
@@ -164,7 +193,7 @@ export default function MarineHomeScreen() {
       return;
     }
     if (id === 'premium') {
-      router.push('/premium');
+      setPremiumModalVisible(true);
       return;
     }
     if (id === 'weather') {
@@ -177,6 +206,28 @@ export default function MarineHomeScreen() {
     }
     setActiveModal(id);
     setModalTitle(label);
+  };
+
+  const handlePressAccount = () => {
+    if (isLoggedIn) {
+      Alert.alert(
+        'Captain Profile ⚓',
+        `Logged in Mobile: +91 ${userPhone || '9876543210'}\nVessel: Sagar Kripa #4\nStatus: Verified Captain (Active Session)`,
+        [
+          { text: 'Close', style: 'cancel' },
+          {
+            text: 'Logout',
+            style: 'destructive',
+            onPress: () => {
+              AuthStore.logout();
+              router.replace('/login');
+            },
+          },
+        ]
+      );
+    } else {
+      router.push('/login');
+    }
   };
 
   const handleSelectSatellite = (sat: Satellite) => {
@@ -216,23 +267,33 @@ export default function MarineHomeScreen() {
 
   const themeColors = nightMode
     ? {
-        background: '#0D1117',
-        cardBg: '#161B22',
-        headerText: '#ECEFF1',
-        statusGreen: '#00E676',
-        toggleBg: 'rgba(255, 82, 82, 0.15)',
-        toggleBorder: '#FF5252',
-        toggleText: '#FF8A80',
-      }
+      background: '#0D1117',
+      cardBg: '#161B22',
+      headerText: '#ECEFF1',
+      statusGreen: '#00E676',
+      gnssBadgeBg: 'rgba(16, 185, 129, 0.12)',
+      gnssBadgeBorder: 'rgba(16, 185, 129, 0.35)',
+      userBadgeBg: 'rgba(56, 189, 248, 0.12)',
+      userBadgeBorder: 'rgba(56, 189, 248, 0.35)',
+      userBadgeText: '#38BDF8',
+      nightToggleBg: 'rgba(245, 158, 11, 0.14)',
+      nightToggleBorder: 'rgba(245, 158, 11, 0.4)',
+      nightToggleText: '#FBBF24',
+    }
     : {
-        background: '#FFFFFF',
-        cardBg: '#F8FAFC',
-        headerText: '#1E293B',
-        statusGreen: '#00C853',
-        toggleBg: '#F1F5F9',
-        toggleBorder: '#CBD5E1',
-        toggleText: '#475569',
-      };
+      background: '#FFFFFF',
+      cardBg: '#F8FAFC',
+      headerText: '#1E293B',
+      statusGreen: '#00C853',
+      gnssBadgeBg: 'rgba(16, 185, 129, 0.08)',
+      gnssBadgeBorder: 'rgba(16, 185, 129, 0.25)',
+      userBadgeBg: 'rgba(37, 99, 235, 0.08)',
+      userBadgeBorder: 'rgba(37, 99, 235, 0.25)',
+      userBadgeText: '#1D4ED8',
+      nightToggleBg: 'rgba(100, 116, 139, 0.08)',
+      nightToggleBorder: '#CBD5E1',
+      nightToggleText: '#475569',
+    };
 
   return (
     <SafeAreaView
@@ -244,36 +305,47 @@ export default function MarineHomeScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         bounces={false}>
-        {/* Top Control Bar (Night Mode toggle & Marine Fix Indicator) */}
+        {/* Top Control Bar (Cockpit Marine Status HUD) */}
         <View style={styles.topControlBar}>
           <TouchableOpacity
             activeOpacity={0.7}
             onPress={handlePressSignal}
-            style={styles.fixStatusBadge}>
+            style={[
+              styles.fixStatusBadge,
+              {
+                backgroundColor: hasGpsFix ? themeColors.gnssBadgeBg : 'rgba(245, 158, 11, 0.12)',
+                borderColor: hasGpsFix ? themeColors.gnssBadgeBorder : 'rgba(245, 158, 11, 0.35)',
+              },
+            ]}>
             <View
               style={[
                 styles.statusDot,
-                { backgroundColor: hasGpsFix ? themeColors.statusGreen : '#FF9100' },
+                { backgroundColor: hasGpsFix ? '#10B981' : '#F59E0B' },
               ]}
             />
-            <Text style={[styles.fixStatusText, { color: themeColors.headerText }]}>
-              {hasGpsFix ? `3D DGPS FIX • ${accuracy}m ACC` : 'ACQUIRING GNSS...'}
+            <Text style={[styles.fixStatusText, { color: hasGpsFix ? (nightMode ? '#34D399' : '#059669') : '#F59E0B' }]}>
+              {hasGpsFix ? `3D FIX • ±${accuracy}m` : 'ACQUIRING GNSS...'}
             </Text>
+            {hasGpsFix && (
+              <View style={[styles.svMiniPill, { backgroundColor: nightMode ? '#1E293B' : '#E2E8F0' }]}>
+                <Text style={[styles.svMiniPillText, { color: themeColors.headerText }]}>{usedSatellites} SV</Text>
+              </View>
+            )}
           </TouchableOpacity>
 
           <View style={styles.topRightControls}>
             <TouchableOpacity
               activeOpacity={0.75}
-              onPress={() => router.push('/login')}
+              onPress={handlePressAccount}
               style={[
-                styles.loginToggleBtn,
+                styles.accountToggleBtn,
                 {
-                  backgroundColor: themeColors.toggleBg,
-                  borderColor: themeColors.toggleBorder,
+                  backgroundColor: themeColors.userBadgeBg,
+                  borderColor: themeColors.userBadgeBorder,
                 },
               ]}>
-              <Text style={[styles.loginToggleText, { color: themeColors.toggleText }]}>
-                ⚓ LOGIN
+              <Text style={[styles.accountToggleText, { color: themeColors.userBadgeText }]}>
+                {isLoggedIn ? `⚓ ${userPhone ? userPhone.slice(-4) : 'Captain'}` : '⚓ LOGIN'}
               </Text>
             </TouchableOpacity>
 
@@ -287,11 +359,11 @@ export default function MarineHomeScreen() {
               style={[
                 styles.nightToggleBtn,
                 {
-                  backgroundColor: themeColors.toggleBg,
-                  borderColor: themeColors.toggleBorder,
+                  backgroundColor: themeColors.nightToggleBg,
+                  borderColor: themeColors.nightToggleBorder,
                 },
               ]}>
-              <Text style={[styles.nightToggleText, { color: themeColors.toggleText }]}>
+              <Text style={[styles.nightToggleText, { color: themeColors.nightToggleText }]}>
                 {nightMode ? '🌙 NIGHT' : '☀️ DAY'}
               </Text>
             </TouchableOpacity>
@@ -333,9 +405,21 @@ export default function MarineHomeScreen() {
         {/* 4. Bottom Upgrade to Premium Button */}
         <PremiumButton
           nightMode={nightMode}
-          onPress={() => handlePressFeature('premium', 'Upgrade to Premium')}
+          onPress={() => setPremiumModalVisible(true)}
         />
       </ScrollView>
+
+      {/* Luxury Upgrade to Premium Modal - Full Screen Hard Locked if trial expired */}
+      <PremiumUpgradeModal
+        visible={premiumModalVisible || !isAccessAllowed}
+        onClose={() => {
+          if (isAccessAllowed) {
+            setPremiumModalVisible(false);
+          }
+        }}
+        nightMode={nightMode}
+        isLocked={!isAccessAllowed}
+      />
 
       {/* Interactive Feature Modal / Bottom Sheet */}
       <FeatureModal
@@ -367,17 +451,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingTop: 4,
-    paddingBottom: 4,
+    paddingHorizontal: 16,
+    paddingTop: 6,
+    paddingBottom: 6,
   },
   fixStatusBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 12,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 16,
+    borderWidth: 1.2,
   },
   statusDot: {
     width: 8,
@@ -385,35 +470,48 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   fixStatusText: {
-    fontSize: 11,
+    fontSize: 11.5,
+    fontWeight: '900',
+    letterSpacing: 0.3,
+  },
+  svMiniPill: {
+    paddingHorizontal: 5,
+    paddingVertical: 1.5,
+    borderRadius: 6,
+    marginLeft: 2,
+  },
+  svMiniPillText: {
+    fontSize: 9.5,
     fontWeight: '800',
-    letterSpacing: 0.5,
   },
   topRightControls: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
-  loginToggleBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 14,
-    borderWidth: 1,
+  accountToggleBtn: {
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1.2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
-  loginToggleText: {
-    fontSize: 11,
-    fontWeight: '800',
+  accountToggleText: {
+    fontSize: 11.5,
+    fontWeight: '900',
     letterSpacing: 0.3,
   },
   nightToggleBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 14,
-    borderWidth: 1,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1.2,
   },
   nightToggleText: {
-    fontSize: 11,
-    fontWeight: '800',
+    fontSize: 11.5,
+    fontWeight: '900',
     letterSpacing: 0.3,
   },
 });

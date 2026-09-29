@@ -77,8 +77,8 @@ class MarineVoiceService {
     this.listeners.forEach((listener) => {
       try {
         listener(text);
-      } catch (e) {
-        console.warn('Listener notification error:', e);
+      } catch {
+        // Silently ignore listener error
       }
     });
   }
@@ -90,8 +90,8 @@ class MarineVoiceService {
       activeLang === 'Gujarati'
         ? `હોડીની દિશા: ${headingDeg} અંશ`
         : activeLang === 'Hindi'
-        ? `नाव की दिशा: ${headingDeg} डिग्री`
-        : `Vessel Heading: ${headingDeg} degrees`;
+          ? `नाव की दिशा: ${headingDeg} डिग्री`
+          : `Vessel Heading: ${headingDeg} degrees`;
 
     this.speak(msg, activeLang);
   }
@@ -103,8 +103,8 @@ class MarineVoiceService {
       activeLang === 'Gujarati'
         ? `લક્ષ્ય બિંદુ: ${name}, અંતર: ${dist}, બેરિંગ: ${bearing}`
         : activeLang === 'Hindi'
-        ? `नेविगेशन लक्ष्य: ${name}, दूरी: ${dist}, बेयरिंग: ${bearing}`
-        : `Target: ${name}, Distance: ${dist}, Bearing: ${bearing}`;
+          ? `नेविगेशन लक्ष्य: ${name}, दूरी: ${dist}, बेयरिंग: ${bearing}`
+          : `Target: ${name}, Distance: ${dist}, Bearing: ${bearing}`;
 
     this.speak(msg, activeLang);
   }
@@ -116,8 +116,8 @@ class MarineVoiceService {
       activeLang === 'Gujarati'
         ? `ચેતવણી: હોડી માર્ગથી ${degrees} અંશ ભટકી ગઈ છે!`
         : activeLang === 'Hindi'
-        ? `सावधान: नाव मार्ग से ${degrees} डिग्री भटक गई!`
-        : `Alert: Vessel is ${degrees} degrees off course!`;
+          ? `सावधान: नाव मार्ग से ${degrees} डिग्री भटक गई!`
+          : `Alert: Vessel is ${degrees} degrees off course!`;
 
     this.speak(msg, activeLang);
   }
@@ -126,20 +126,20 @@ class MarineVoiceService {
     dateOrOptions:
       | string
       | {
-          day: number;
-          monthEn?: string;
-          tithiName: string;
-          tithiNameGu?: string;
-          tithiNameHi?: string;
-          illumination: number;
-          portNameEn?: string;
-          portNameGu?: string;
-          portNameHi?: string;
-          tideTitleEn?: string;
-          tideTitleGu?: string;
-          tideTitleHi?: string;
-          lang?: 'English' | 'Hindi' | 'Gujarati';
-        },
+        day: number;
+        monthEn?: string;
+        tithiName: string;
+        tithiNameGu?: string;
+        tithiNameHi?: string;
+        illumination: number;
+        portNameEn?: string;
+        portNameGu?: string;
+        portNameHi?: string;
+        tideTitleEn?: string;
+        tideTitleGu?: string;
+        tideTitleHi?: string;
+        lang?: 'English' | 'Hindi' | 'Gujarati';
+      },
     tithi?: string,
     illumination?: number,
     tide?: string,
@@ -178,8 +178,8 @@ class MarineVoiceService {
       activeLang === 'Gujarati'
         ? `${dateOrOptions}, તિથિ ${tithi}. ચંદ્ર ${illumination} ટકા તેજસ્વી. ${tide}.`
         : activeLang === 'Hindi'
-        ? `${dateOrOptions}, तिथि ${tithi}। चाँद ${illumination} प्रतिशत रोशन। ${tide}।`
-        : `${dateOrOptions}, Tithi ${tithi}. Moon is ${illumination}% illuminated. ${tide}.`;
+          ? `${dateOrOptions}, तिथि ${tithi}। चाँद ${illumination} प्रतिशत रोशन। ${tide}।`
+          : `${dateOrOptions}, Tithi ${tithi}. Moon is ${illumination}% illuminated. ${tide}.`;
 
     this.speak(msg, activeLang);
   }
@@ -191,12 +191,12 @@ class MarineVoiceService {
     if (ExpoSpeech && typeof ExpoSpeech.stop === 'function') {
       try {
         ExpoSpeech.stop();
-      } catch {}
+      } catch { }
     }
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       try {
         window.speechSynthesis.cancel();
-      } catch {}
+      } catch { }
     }
   }
 
@@ -397,8 +397,8 @@ class MarineVoiceService {
           pitch: 1.0,
         });
         return;
-      } catch (err) {
-        console.warn('[ExpoSpeech error]:', err);
+      } catch {
+        // Silently fall back to web speech
       }
     }
 
@@ -460,8 +460,7 @@ class MarineVoiceService {
         }
         utterance.rate = 0.95;
 
-        utterance.onerror = (e) => {
-          console.warn('[SpeechSynthesis error]:', e);
+        utterance.onerror = () => {
           if (activeLang === 'Gujarati' && speechLang === 'gu-IN') {
             // Immediate fallback to Hindi voice with Devanagari transliteration
             const fallbackUtterance = new SpeechSynthesisUtterance(gujaratiToDevanagari(text));
@@ -472,8 +471,8 @@ class MarineVoiceService {
         };
 
         window.speechSynthesis.speak(utterance);
-      } catch (err) {
-        console.warn('[SpeechSynthesis error]:', err);
+      } catch {
+        // Silently ignore speech synthesis browser restriction
       }
     }
   }

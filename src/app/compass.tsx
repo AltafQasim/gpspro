@@ -1,6 +1,20 @@
+import { BackButton } from '@/components/ui/back-button';
+import {
+  GpsService,
+  LocationTelemetry
+} from '@/services/gpsService';
+import { SettingsStore } from '@/services/settingsStore';
+import { VoiceService } from '@/services/voiceService';
+import {
+  WaypointItem,
+  getActiveTarget,
+  getWaypoints,
+  setActiveTarget,
+  subscribeActiveTarget,
+} from '@/services/waypointStore';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Animated,
@@ -17,23 +31,6 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import {
-  WaypointItem,
-  getActiveTarget,
-  getWaypoints,
-  setActiveTarget,
-  subscribeActiveTarget,
-} from '@/services/waypointStore';
-import { VoiceService } from '@/services/voiceService';
-import {
-  GpsService,
-  LocationTelemetry,
-  calculateNavDistanceAndBearing,
-  formatNauticalLat,
-  formatNauticalLon,
-} from '@/services/gpsService';
-import { SettingsStore } from '@/services/settingsStore';
-import { BackButton } from '@/components/ui/back-button';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const DIAL_SIZE = Math.min(SCREEN_WIDTH * 0.84, 336);
@@ -411,55 +408,55 @@ export default function CompassScreen() {
 
   const theme = nightMode
     ? {
-        bg: '#060B16',
-        headerBg: 'rgba(12, 22, 45, 0.75)',
-        headerText: '#FFFFFF',
-        headerSub: '#38BDF8',
-        cardBg: '#0B1528',
-        cardBorder: 'rgba(56, 189, 248, 0.22)',
-        cardAccent: '#00E5FF',
-        label: '#94A3B8',
-        value: '#38BDF8',
-        valueBright: '#FFFFFF',
-        subVal: '#7DD3FC',
-        accent: '#00E5FF',
-        dialBg: '#07101E',
-        dialBezel: '#0284C7',
-        dialBezelBorder: 'rgba(56, 189, 248, 0.4)',
-        dialGlow: 'rgba(0, 229, 255, 0.18)',
-        dialTickMajor: '#00E5FF',
-        dialTickMinor: 'rgba(56, 189, 248, 0.35)',
-        dialTickText: '#94A3B8',
-        arrowColor: '#FF6D00',
-        hubColor: '#FFB300',
-        hubBorder: '#FFFFFF',
-        cardinalN: '#EF4444',
-      }
+      bg: '#060B16',
+      headerBg: 'rgba(12, 22, 45, 0.75)',
+      headerText: '#FFFFFF',
+      headerSub: '#38BDF8',
+      cardBg: '#0B1528',
+      cardBorder: 'rgba(56, 189, 248, 0.22)',
+      cardAccent: '#00E5FF',
+      label: '#94A3B8',
+      value: '#38BDF8',
+      valueBright: '#FFFFFF',
+      subVal: '#7DD3FC',
+      accent: '#00E5FF',
+      dialBg: '#07101E',
+      dialBezel: '#0284C7',
+      dialBezelBorder: 'rgba(56, 189, 248, 0.4)',
+      dialGlow: 'rgba(0, 229, 255, 0.18)',
+      dialTickMajor: '#00E5FF',
+      dialTickMinor: 'rgba(56, 189, 248, 0.35)',
+      dialTickText: '#94A3B8',
+      arrowColor: '#FF6D00',
+      hubColor: '#FFB300',
+      hubBorder: '#FFFFFF',
+      cardinalN: '#EF4444',
+    }
     : {
-        bg: '#F1F6FA',
-        headerBg: 'rgba(255, 255, 255, 0.85)',
-        headerText: '#0F172A',
-        headerSub: '#0284C7',
-        cardBg: '#FFFFFF',
-        cardBorder: '#D0E3F0',
-        cardAccent: '#0284C7',
-        label: '#64748B',
-        value: '#0369A1',
-        valueBright: '#0F172A',
-        subVal: '#0284C7',
-        accent: '#0284C7',
-        dialBg: '#FFFFFF',
-        dialBezel: '#0284C7',
-        dialBezelBorder: 'rgba(2, 132, 199, 0.3)',
-        dialGlow: 'rgba(2, 132, 199, 0.12)',
-        dialTickMajor: '#0284C7',
-        dialTickMinor: 'rgba(100, 116, 139, 0.3)',
-        dialTickText: '#334155',
-        arrowColor: '#EA580C',
-        hubColor: '#F59E0B',
-        hubBorder: '#FFFFFF',
-        cardinalN: '#DC2626',
-      };
+      bg: '#F1F6FA',
+      headerBg: 'rgba(255, 255, 255, 0.85)',
+      headerText: '#0F172A',
+      headerSub: '#0284C7',
+      cardBg: '#FFFFFF',
+      cardBorder: '#D0E3F0',
+      cardAccent: '#0284C7',
+      label: '#64748B',
+      value: '#0369A1',
+      valueBright: '#0F172A',
+      subVal: '#0284C7',
+      accent: '#0284C7',
+      dialBg: '#FFFFFF',
+      dialBezel: '#0284C7',
+      dialBezelBorder: 'rgba(2, 132, 199, 0.3)',
+      dialGlow: 'rgba(2, 132, 199, 0.12)',
+      dialTickMajor: '#0284C7',
+      dialTickMinor: 'rgba(100, 116, 139, 0.3)',
+      dialTickText: '#334155',
+      arrowColor: '#EA580C',
+      hubColor: '#F59E0B',
+      hubBorder: '#FFFFFF',
+      cardinalN: '#DC2626',
+    };
 
   const formattedHeading = heading.toString().padStart(3, '0');
   const cardinalDirection = getCardinalDirection(heading);
@@ -618,8 +615,8 @@ export default function CompassScreen() {
                         isCardinal
                           ? [styles.tickLineCardinal, { backgroundColor: deg === 0 ? '#EF4444' : theme.accent }]
                           : isMajor
-                          ? [styles.tickLineMajor, { backgroundColor: theme.dialTickMajor }]
-                          : [styles.tickLineMinor, { backgroundColor: theme.dialTickMinor }],
+                            ? [styles.tickLineMajor, { backgroundColor: theme.dialTickMajor }]
+                            : [styles.tickLineMinor, { backgroundColor: theme.dialTickMinor }],
                       ]}
                     />
                   </View>
@@ -641,8 +638,8 @@ export default function CompassScreen() {
                         item.isNorth
                           ? styles.northLabelText
                           : item.isCardinal
-                          ? [styles.cardinalLabelText, { color: theme.accent }]
-                          : [styles.degLabelText, { color: theme.dialTickText }],
+                            ? [styles.cardinalLabelText, { color: theme.accent }]
+                            : [styles.degLabelText, { color: theme.dialTickText }],
                       ]}>
                       {item.label}
                     </Text>
@@ -1010,7 +1007,7 @@ export default function CompassScreen() {
       <Modal visible={showWaypointModal} transparent animationType="slide">
         <TouchableWithoutFeedback onPress={() => setShowWaypointModal(false)}>
           <View style={styles.modalBackdrop}>
-            <TouchableWithoutFeedback onPress={() => {}}>
+            <TouchableWithoutFeedback onPress={() => { }}>
               <View style={styles.modalCard}>
                 <View style={styles.modalHeaderRow}>
                   <View style={styles.modalTitleWrap}>

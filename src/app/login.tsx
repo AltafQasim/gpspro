@@ -1,8 +1,11 @@
+import { AuthStore } from '@/services/authStore';
+import { SettingsStore } from '@/services/settingsStore';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import React, { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
-  Alert,
+  Animated,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -10,178 +13,353 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function LoginScreen() {
   const router = useRouter();
 
-  // State
-  const [loginMode, setLoginMode] = useState<'mobile' | 'vessel'>('mobile');
+  // Theme State
+  const [nightMode, setNightMode] = useState<boolean>(SettingsStore.isNightMode());
+
+  useEffect(() => {
+    const unsub = SettingsStore.subscribe(() => {
+      setNightMode(SettingsStore.isNightMode());
+    });
+    return unsub;
+  }, []);
+
+  // Form State - Mobile Only
   const [mobileNumber, setMobileNumber] = useState<string>('9876543210');
-  const [vesselId, setVesselId] = useState<string>('IND-GJ-11-FB-8842');
   const [otpCode, setOtpCode] = useState<string>('');
   const [otpSent, setOtpSent] = useState<boolean>(false);
-  const [selectedLang, setSelectedLang] = useState<'Gujarati' | 'Hindi' | 'English'>('Gujarati');
+  const [resendTimer, setResendTimer] = useState<number>(30);
+  const [isVerifying, setIsVerifying] = useState<boolean>(false);
+  const [phoneError, setPhoneError] = useState<string | null>(null);
+  const [otpError, setOtpError] = useState<string | null>(null);
+
+  // Pulse Animation for Emblem
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, {
+          toValue: 1.06,
+          duration: 900,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim, {
+          toValue: 1,
+          duration: 900,
+          useNativeDriver: true,
+        }),
+      ])
+    ).start();
+  }, [pulseAnim]);
+
+  // Resend Countdown Timer
+  useEffect(() => {
+    if (!otpSent) return;
+    if (resendTimer <= 0) return;
+    const interval = setInterval(() => {
+      setResendTimer((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [otpSent, resendTimer]);
 
   const handleSendOtp = () => {
-    if (mobileNumber.length < 10) {
-      Alert.alert('Error', 'Please enter a valid 10-digit mobile number.');
+    const cleaned = mobileNumber.replace(/\D/g, '');
+    if (cleaned.length !== 10) {
+      setPhoneError('Please enter a valid 10-digit mobile number');
       return;
     }
+    setPhoneError(null);
+    Keyboard.dismiss();
     setOtpSent(true);
-    Alert.alert('OTP Sent 📲', `A 4-digit verification code was sent to +91 ${mobileNumber}`);
+    setResendTimer(30);
+    setOtpCode('');
   };
 
-  const handleVerifyLogin = () => {
-    Alert.alert('Login Successful ⚓', 'Welcome Captain! Vessel Sagar Kripa registered for fishing season 2026-2027.', [
-      {
-        text: 'Enter Navigation',
-        onPress: () => router.replace('/'),
-      },
-    ]);
+  const handleVerifyOtp = () => {
+    const cleaned = mobileNumber.replace(/\D/g, '');
+    if (cleaned.length !== 10) {
+      setPhoneError('Please enter a valid 10-digit mobile number');
+      return;
+    }
+    if (otpCode.trim().length < 4) {
+      setOtpError('Please enter the 4-digit SMS verification code');
+      return;
+    }
+
+    setOtpError(null);
+    Keyboard.dismiss();
+    setIsVerifying(true);
+
+    setTimeout(() => {
+      setIsVerifying(false);
+      // Perform login in AuthStore
+      AuthStore.login(cleaned, `Captain Sagar`);
+      router.replace('/');
+    }, 350);
   };
 
-  const handleOfflineBypass = () => {
-    router.replace('/');
+  const handleQuickDemoFill = () => {
+    setOtpCode('1234');
+    setOtpError(null);
   };
+
+  const themeColors = nightMode
+    ? {
+      bg: '#070D1E',
+      cardBg: '#0F172A',
+      cardBorder: '#1E293B',
+      textPrimary: '#F8FAFC',
+      textSecondary: '#94A3B8',
+      inputBg: '#1E293B',
+      inputBorder: '#334155',
+      inputBorderActive: '#38BDF8',
+      accent: '#0284C7',
+      accentGlow: '#38BDF8',
+      pillBg: '#1E293B',
+      pillActive: '#0284C7',
+      statusDot: '#10B981',
+    }
+    : {
+      bg: '#F1F5F9',
+      cardBg: '#FFFFFF',
+      cardBorder: '#E2E8F0',
+      textPrimary: '#0F172A',
+      textSecondary: '#64748B',
+      inputBg: '#F8FAFC',
+      inputBorder: '#CBD5E1',
+      inputBorderActive: '#1D4ED8',
+      accent: '#1D4ED8',
+      accentGlow: '#2563EB',
+      pillBg: '#E2E8F0',
+      pillActive: '#1D4ED8',
+      statusDot: '#059669',
+    };
 
   return (
-    <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={styles.container}>
-      <StatusBar style="light" animated={true} />
+    <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={[styles.container, { backgroundColor: themeColors.bg }]}>
+      <StatusBar hidden={true} />
 
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={{ flex: 1 }}>
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          {/* Top Bar with Language Selector */}
-          <View style={styles.topLangRow}>
-            <View style={styles.langPillsWrap}>
-              {(['Gujarati', 'Hindi', 'English'] as const).map((l) => (
-                <TouchableOpacity
-                  key={l}
-                  onPress={() => setSelectedLang(l)}
-                  style={[styles.langPill, selectedLang === l && styles.langPillActive]}>
-                  <Text style={[styles.langPillText, selectedLang === l && styles.langPillTextActive]}>
-                    {l === 'Gujarati' ? 'ગુજરાતી' : l === 'Hindi' ? 'हिंदी' : 'Eng'}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
 
-            <TouchableOpacity onPress={handleOfflineBypass} style={styles.skipBtn}>
-              <Text style={styles.skipBtnText}>Skip ➔</Text>
-            </TouchableOpacity>
-          </View>
-
-          {/* Marine Logo & Hero Header */}
+          {/* Marine Hero Header */}
           <View style={styles.heroSection}>
-            <View style={styles.logoCircle}>
-              <Text style={styles.logoAnchor}>⚓</Text>
+            <Animated.View style={[styles.logoCircle, { transform: [{ scale: pulseAnim }], borderColor: themeColors.accentGlow }]}>
+              <View style={[styles.logoInnerCircle, { backgroundColor: nightMode ? '#0A2540' : '#DBEAFE' }]}>
+                <Text style={styles.logoAnchor}>⚓</Text>
+              </View>
+            </Animated.View>
+
+            <Text style={[styles.appTitle, { color: themeColors.textPrimary }]}>GPS FISHING RAHI</Text>
+            <Text style={[styles.appSubtitle, { color: themeColors.accentGlow }]}>
+              PROFESSIONAL MARINE NAVIGATION & ARABIAN SEA CHARTS
+            </Text>
+
+            <View style={styles.secureBadgeRow}>
+              <View style={[styles.secureBadge, { borderColor: themeColors.cardBorder }]}>
+                <View style={[styles.liveDot, { backgroundColor: themeColors.statusDot }]} />
+                <Text style={[styles.secureBadgeText, { color: themeColors.textSecondary }]}>
+                  CAPTAIN PORTAL • SECURE OTP ACCESS
+                </Text>
+              </View>
             </View>
-            <Text style={styles.appTitle}>GPS FISHING RAHI</Text>
-            <Text style={styles.appSubtitle}>Professional Marine GPS & Bathymetric Navigation</Text>
           </View>
 
-          {/* Login Mode Toggle Tabs */}
-          <View style={styles.tabContainer}>
-            <TouchableOpacity
-              activeOpacity={0.8}
-              onPress={() => setLoginMode('mobile')}
-              style={[styles.tabBtn, loginMode === 'mobile' && styles.tabBtnActive]}>
-              <Text style={[styles.tabText, loginMode === 'mobile' && styles.tabTextActive]}>
-                📱 Mobile OTP
-              </Text>
-            </TouchableOpacity>
+          {/* Main Mobile Login Card */}
+          <View style={[styles.loginCard, { backgroundColor: themeColors.cardBg, borderColor: themeColors.cardBorder }]}>
+            <View style={styles.cardHeaderRow}>
+              <View style={styles.cardTitleWrap}>
+                <Text style={[styles.cardTitle, { color: themeColors.textPrimary }]}>
+                  {otpSent ? 'Enter SMS Verification Code' : 'Mobile Number Login'}
+                </Text>
+                <Text style={[styles.cardSub, { color: themeColors.textSecondary }]}>
+                  {otpSent
+                    ? `Verification code dispatched to +91 ${mobileNumber}`
+                    : 'Sign in to access your offline charts, saved waypoints & GPS tracks'}
+                </Text>
+              </View>
 
-            <TouchableOpacity
-              activeOpacity={0.8}
-              onPress={() => setLoginMode('vessel')}
-              style={[styles.tabBtn, loginMode === 'vessel' && styles.tabBtnActive]}>
-              <Text style={[styles.tabText, loginMode === 'vessel' && styles.tabTextActive]}>
-                🚢 Vessel ID
-              </Text>
-            </TouchableOpacity>
-          </View>
+              {otpSent && (
+                <TouchableOpacity
+                  onPress={() => {
+                    setOtpSent(false);
+                    setOtpCode('');
+                    setOtpError(null);
+                  }}
+                  style={styles.changePhoneBtn}>
+                  <Text style={[styles.changePhoneBtnText, { color: themeColors.accentGlow }]}>✏️ Change</Text>
+                </TouchableOpacity>
+              )}
+            </View>
 
-          {/* Main Login Card */}
-          <View style={styles.loginCard}>
-            {loginMode === 'mobile' ? (
-              <>
-                <Text style={styles.inputLabel}>Enter Registered Mobile Number</Text>
-                <View style={styles.mobileInputRow}>
-                  <View style={styles.countryCodeBox}>
-                    <Text style={styles.countryCodeText}>🇮🇳 +91</Text>
+            {/* Step 1: Mobile Number Input */}
+            {!otpSent ? (
+              <View style={styles.inputGroup}>
+                <Text style={[styles.inputLabel, { color: themeColors.textPrimary }]}>10-Digit Mobile Number</Text>
+                <View
+                  style={[
+                    styles.mobileInputRow,
+                    { backgroundColor: themeColors.inputBg, borderColor: themeColors.inputBorder },
+                    phoneError ? { borderColor: '#EF4444', borderWidth: 1.5 } : null,
+                  ]}>
+                  <View style={[styles.countryCodeBadge, { borderColor: themeColors.cardBorder }]}>
+                    <Text style={styles.flagEmoji}>🇮🇳</Text>
+                    <Text style={[styles.countryCodeText, { color: themeColors.textPrimary }]}>+91</Text>
                   </View>
+
                   <TextInput
                     value={mobileNumber}
-                    onChangeText={setMobileNumber}
-                    keyboardType="phone-pad"
+                    onChangeText={(val) => {
+                      setMobileNumber(val.replace(/\D/g, '').slice(0, 10));
+                      if (phoneError) setPhoneError(null);
+                    }}
+                    keyboardType="number-pad"
                     maxLength={10}
-                    placeholder="Mobile Number"
-                    placeholderTextColor="#64748B"
-                    style={styles.textInputMain}
+                    placeholder="Enter mobile number"
+                    placeholderTextColor={themeColors.textSecondary}
+                    style={[styles.mobileTextInput, { color: themeColors.textPrimary }]}
                   />
+
+                  {mobileNumber.length > 0 && (
+                    <TouchableOpacity
+                      onPress={() => {
+                        setMobileNumber('');
+                        if (phoneError) setPhoneError(null);
+                      }}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      style={styles.clearBtn}>
+                      <Text style={styles.clearBtnText}>✕</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
 
-                {otpSent && (
-                  <View style={styles.otpSection}>
-                    <Text style={styles.inputLabel}>Enter 4-Digit Security OTP</Text>
-                    <TextInput
-                      value={otpCode}
-                      onChangeText={setOtpCode}
-                      keyboardType="number-pad"
-                      maxLength={4}
-                      placeholder="• • • •"
-                      placeholderTextColor="#94A3B8"
-                      style={styles.otpInput}
-                    />
+                {/* Inline Phone Error */}
+                {phoneError ? (
+                  <View style={{ marginTop: 6, flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                    <Text style={{ fontSize: 12, color: '#EF4444', fontWeight: '700' }}>⚠️ {phoneError}</Text>
                   </View>
-                )}
+                ) : null}
 
+                {/* Send OTP Button */}
                 <TouchableOpacity
-                  activeOpacity={0.88}
-                  onPress={otpSent ? handleVerifyLogin : handleSendOtp}
-                  style={styles.loginSubmitBtn}>
-                  <Text style={styles.loginSubmitBtnText}>
-                    {otpSent ? 'Verify & Launch Marine GPS' : 'Send Login OTP'}
-                  </Text>
+                  activeOpacity={0.85}
+                  onPress={handleSendOtp}
+                  style={[styles.primaryActionBtn, { backgroundColor: themeColors.accent }]}>
+                  <Text style={styles.primaryActionBtnText}>Send Verification Code 📲</Text>
                 </TouchableOpacity>
-              </>
+              </View>
             ) : (
-              <>
-                <Text style={styles.inputLabel}>Enter Marine Fisheries Vessel ID</Text>
+              /* Step 2: 4-Digit OTP Code Verification */
+              <View style={styles.inputGroup}>
+                <View style={styles.otpHeaderRow}>
+                  <Text style={[styles.inputLabel, { color: themeColors.textPrimary }]}>4-Digit Security OTP</Text>
+                  <TouchableOpacity onPress={handleQuickDemoFill}>
+                    <Text style={[styles.demoFillLink, { color: themeColors.accentGlow }]}>Demo Auto-Fill (1234)</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.otpBoxesRow}>
+                  {[0, 1, 2, 3].map((index) => {
+                    const char = otpCode[index] || '';
+                    const isFocused = otpCode.length === index;
+                    return (
+                      <View
+                        key={index}
+                        style={[
+                          styles.otpSingleBox,
+                          {
+                            backgroundColor: themeColors.inputBg,
+                            borderColor: otpError
+                              ? '#EF4444'
+                              : char
+                                ? themeColors.accentGlow
+                                : isFocused
+                                  ? themeColors.accent
+                                  : themeColors.inputBorder,
+                          },
+                        ]}>
+                        <Text style={[styles.otpBoxChar, { color: themeColors.textPrimary }]}>{char ? char : '•'}</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+
+                {/* Inline OTP Error */}
+                {otpError ? (
+                  <View style={{ marginTop: 6, flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                    <Text style={{ fontSize: 12, color: '#EF4444', fontWeight: '700' }}>⚠️ {otpError}</Text>
+                  </View>
+                ) : null}
+
                 <TextInput
-                  value={vesselId}
-                  onChangeText={setVesselId}
-                  autoCapitalize="characters"
-                  placeholder="e.g. IND-GJ-11-FB-8842"
-                  placeholderTextColor="#64748B"
-                  style={styles.textInputFull}
+                  value={otpCode}
+                  onChangeText={(val) => {
+                    setOtpCode(val.replace(/\D/g, '').slice(0, 4));
+                    if (otpError) setOtpError(null);
+                  }}
+                  keyboardType="number-pad"
+                  maxLength={4}
+                  autoFocus={true}
+                  style={styles.hiddenOtpInput}
                 />
 
+                {/* Resend Timer & Action */}
+                <View style={styles.resendRow}>
+                  {resendTimer > 0 ? (
+                    <Text style={[styles.resendTimerText, { color: themeColors.textSecondary }]}>
+                      Resend code in <Text style={{ fontWeight: '900', color: themeColors.accentGlow }}>{resendTimer}s</Text>
+                    </Text>
+                  ) : (
+                    <TouchableOpacity onPress={handleSendOtp}>
+                      <Text style={[styles.resendLink, { color: themeColors.accentGlow }]}>Didn't receive code? Resend OTP</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {/* Verify Button */}
                 <TouchableOpacity
-                  activeOpacity={0.88}
-                  onPress={handleVerifyLogin}
-                  style={styles.loginSubmitBtn}>
-                  <Text style={styles.loginSubmitBtnText}>Authenticate Vessel Token</Text>
+                  activeOpacity={0.85}
+                  onPress={handleVerifyOtp}
+                  disabled={isVerifying}
+                  style={[styles.primaryActionBtn, { backgroundColor: themeColors.accent }]}>
+                  <Text style={styles.primaryActionBtnText}>
+                    {isVerifying ? 'Verifying Credentials...' : 'Verify & Launch Marine GPS ⚓'}
+                  </Text>
                 </TouchableOpacity>
-              </>
+              </View>
             )}
 
-            {/* Offline Bypass Link */}
-            <TouchableOpacity onPress={handleOfflineBypass} style={styles.offlineBypassBtn}>
-              <Text style={styles.offlineBypassText}>
-                ⚡ No Internet? <Text style={{ fontWeight: '900', color: '#00E5FF' }}>Launch Offline Sea Navigator</Text>
-              </Text>
-            </TouchableOpacity>
+            {/* Maritime Security Guarantees */}
+            <View style={[styles.trustDivider, { borderColor: themeColors.cardBorder }]} />
+            <View style={styles.securityGuarantees}>
+              <View style={styles.guaranteeItem}>
+                <Text style={styles.guaranteeIcon}>🔒</Text>
+                <Text style={[styles.guaranteeText, { color: themeColors.textSecondary }]}>
+                  Encrypted Captain Credentials & Boat License
+                </Text>
+              </View>
+              <View style={styles.guaranteeItem}>
+                <Text style={styles.guaranteeIcon}>📶</Text>
+                <Text style={[styles.guaranteeText, { color: themeColors.textSecondary }]}>
+                  Once verified, works 100% offline at sea
+                </Text>
+              </View>
+            </View>
           </View>
 
-          {/* Trust Badges Footer */}
-          <View style={styles.footerTrustRow}>
-            <Text style={styles.footerTrustText}>
-              🔒 WGS-84 Marine Compliant • Offline Cached • Gujarat Coastal Basin
+          {/* Footer note */}
+          <View style={styles.footerNoteRow}>
+            <Text style={[styles.footerNoteText, { color: themeColors.textSecondary }]}>
+              Compliant with Gujarat Maritime Board & Indian EEZ Navigation Rules
             </Text>
           </View>
         </ScrollView>
@@ -193,227 +371,256 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0A0E17',
   },
   scrollContent: {
     paddingHorizontal: 20,
     paddingTop: 10,
     paddingBottom: 40,
-    gap: 16,
-  },
-  topLangRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 4,
-  },
-  langPillsWrap: {
-    flexDirection: 'row',
-    backgroundColor: '#1E293B',
-    borderRadius: 20,
-    padding: 3,
-    gap: 4,
-  },
-  langPill: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 16,
-  },
-  langPillActive: {
-    backgroundColor: '#0284C7',
-  },
-  langPillText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#94A3B8',
-  },
-  langPillTextActive: {
-    color: '#FFFFFF',
-  },
-  skipBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  skipBtnText: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: '#00E5FF',
+    gap: 18,
   },
   heroSection: {
     alignItems: 'center',
     gap: 8,
-    marginTop: 8,
+    marginTop: 6,
     marginBottom: 4,
   },
   logoCircle: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
-    backgroundColor: '#0D47A1',
+    width: 82,
+    height: 82,
+    borderRadius: 41,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 2,
-    borderColor: '#00E5FF',
     shadowColor: '#00E5FF',
-    shadowOpacity: 0.4,
-    shadowRadius: 10,
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
     elevation: 8,
   },
+  logoInnerCircle: {
+    width: 66,
+    height: 66,
+    borderRadius: 33,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   logoAnchor: {
-    fontSize: 38,
+    fontSize: 34,
   },
   appTitle: {
     fontSize: 24,
     fontWeight: '900',
-    color: '#FFFFFF',
-    letterSpacing: 1,
-  },
-  appSubtitle: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#94A3B8',
+    letterSpacing: 1.5,
     textAlign: 'center',
   },
-  tabContainer: {
-    flexDirection: 'row',
-    backgroundColor: '#161F30',
-    borderRadius: 14,
-    padding: 4,
-    gap: 6,
-  },
-  tabBtn: {
-    flex: 1,
-    height: 44,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  tabBtnActive: {
-    backgroundColor: '#0284C7',
-  },
-  tabText: {
-    fontSize: 14,
+  appSubtitle: {
+    fontSize: 11,
     fontWeight: '800',
-    color: '#64748B',
+    letterSpacing: 1.2,
+    textAlign: 'center',
+    maxWidth: '90%',
   },
-  tabTextActive: {
-    color: '#FFFFFF',
+  secureBadgeRow: {
+    marginTop: 4,
+  },
+  secureBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  liveDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+  },
+  secureBadgeText: {
+    fontSize: 9.5,
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
   loginCard: {
-    backgroundColor: '#131B2A',
-    borderRadius: 20,
+    borderRadius: 24,
     padding: 22,
-    gap: 14,
-    borderWidth: 1,
-    borderColor: '#1E293B',
+    gap: 18,
+    borderWidth: 1.2,
     shadowColor: '#000',
-    shadowOpacity: 0.4,
-    shadowRadius: 8,
+    shadowOpacity: 0.25,
+    shadowRadius: 10,
     elevation: 6,
   },
-  inputLabel: {
-    fontSize: 13,
+  cardHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+  },
+  cardTitleWrap: {
+    flex: 1,
+    gap: 3,
+  },
+  cardTitle: {
+    fontSize: 17,
+    fontWeight: '900',
+    letterSpacing: -0.2,
+  },
+  cardSub: {
+    fontSize: 12.5,
+    fontWeight: '500',
+    lineHeight: 18,
+  },
+  changePhoneBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+  },
+  changePhoneBtnText: {
+    fontSize: 12,
     fontWeight: '800',
-    color: '#E2E8F0',
-    letterSpacing: 0.2,
+  },
+  inputGroup: {
+    gap: 14,
+  },
+  inputLabel: {
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
   },
   mobileInputRow: {
     flexDirection: 'row',
-    gap: 10,
     alignItems: 'center',
-  },
-  countryCodeBox: {
-    height: 52,
+    borderRadius: 14,
+    borderWidth: 1.5,
     paddingHorizontal: 12,
-    backgroundColor: '#1E293B',
-    borderRadius: 12,
+    height: 54,
+    gap: 10,
+  },
+  countryCodeBadge: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: '#334155',
+    gap: 6,
+    paddingRight: 10,
+    borderRightWidth: 1,
+  },
+  flagEmoji: {
+    fontSize: 18,
   },
   countryCodeText: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#F8FAFC',
+    fontSize: 16,
+    fontWeight: '900',
   },
-  textInputMain: {
+  mobileTextInput: {
     flex: 1,
-    height: 52,
-    backgroundColor: '#1E293B',
-    borderRadius: 12,
-    paddingHorizontal: 14,
     fontSize: 17,
     fontWeight: '800',
-    color: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#334155',
+    letterSpacing: 1,
+    height: '100%',
   },
-  textInputFull: {
-    height: 52,
-    backgroundColor: '#1E293B',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  otpSection: {
-    gap: 8,
-    marginTop: 4,
-  },
-  otpInput: {
-    height: 52,
-    backgroundColor: '#1E293B',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    fontSize: 22,
-    fontWeight: '900',
-    color: '#00E5FF',
-    textAlign: 'center',
-    letterSpacing: 8,
-    borderWidth: 1.5,
-    borderColor: '#0284C7',
-  },
-  loginSubmitBtn: {
-    backgroundColor: '#0284C7',
-    height: 52,
-    borderRadius: 26,
+  clearBtn: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: 'rgba(148, 163, 184, 0.2)',
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 6,
+  },
+  clearBtnText: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  primaryActionBtn: {
+    height: 52,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
     shadowColor: '#0284C7',
-    shadowOpacity: 0.4,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.35,
     shadowRadius: 6,
     elevation: 4,
   },
-  loginSubmitBtnText: {
+  primaryActionBtnText: {
     color: '#FFFFFF',
-    fontSize: 16,
+    fontSize: 15.5,
     fontWeight: '900',
-    letterSpacing: 0.3,
+    letterSpacing: 0.4,
   },
-  offlineBypassBtn: {
+  otpHeaderRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 8,
-    marginTop: 4,
+    justifyContent: 'space-between',
   },
-  offlineBypassText: {
-    fontSize: 13,
-    color: '#94A3B8',
+  demoFillLink: {
+    fontSize: 11.5,
+    fontWeight: '800',
   },
-  footerTrustRow: {
+  otpBoxesRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  otpSingleBox: {
+    flex: 1,
+    height: 60,
+    borderRadius: 14,
+    borderWidth: 2,
     alignItems: 'center',
-    marginTop: 8,
+    justifyContent: 'center',
   },
-  footerTrustText: {
-    fontSize: 11,
+  otpBoxChar: {
+    fontSize: 22,
+    fontWeight: '900',
+  },
+  hiddenOtpInput: {
+    position: 'absolute',
+    opacity: 0,
+    width: 1,
+    height: 1,
+  },
+  resendRow: {
+    alignItems: 'center',
+    paddingVertical: 2,
+  },
+  resendTimerText: {
+    fontSize: 12.5,
     fontWeight: '600',
-    color: '#475569',
+  },
+  resendLink: {
+    fontSize: 12.5,
+    fontWeight: '800',
+    textDecorationLine: 'underline',
+  },
+  trustDivider: {
+    borderTopWidth: 1,
+    marginTop: 2,
+  },
+  securityGuarantees: {
+    gap: 8,
+  },
+  guaranteeItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  guaranteeIcon: {
+    fontSize: 14,
+  },
+  guaranteeText: {
+    fontSize: 11.5,
+    fontWeight: '600',
+  },
+  footerNoteRow: {
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  footerNoteText: {
+    fontSize: 10.5,
+    fontWeight: '600',
     textAlign: 'center',
+    lineHeight: 15,
   },
 });

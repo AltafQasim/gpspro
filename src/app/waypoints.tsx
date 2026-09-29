@@ -1,35 +1,3 @@
-import { useRouter } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
-import React, { useEffect, useState } from 'react';
-import {
-  Alert,
-  Keyboard,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  ScrollView,
-  Share,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  TouchableWithoutFeedback,
-  View,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import {
-  INITIAL_WAYPOINTS,
-  WaypointItem,
-  getActiveTarget,
-  getWaypoints,
-  setActiveTarget,
-  setGlobalWaypoints,
-  subscribeActiveTarget,
-  subscribeWaypoints,
-} from '@/services/waypointStore';
-import { SettingsStore } from '@/services/settingsStore';
-import { VoiceService } from '@/services/voiceService';
-import { BackButton } from '@/components/ui/back-button';
 import {
   ModernCheckIcon,
   ModernCloseIcon,
@@ -46,6 +14,40 @@ import {
   ModernTrashIcon,
   ModernVhfRadioIcon,
 } from '@/components/marine/WaypointIcons';
+import { BackButton } from '@/components/ui/back-button';
+import { AuthStore } from '@/services/authStore';
+import { SettingsStore } from '@/services/settingsStore';
+import { VoiceService } from '@/services/voiceService';
+import {
+  INITIAL_WAYPOINTS,
+  WaypointItem,
+  dmmToDecimal,
+  getActiveTarget,
+  getWaypoints,
+  setActiveTarget,
+  setGlobalWaypoints,
+  subscribeActiveTarget,
+  subscribeWaypoints,
+} from '@/services/waypointStore';
+import { useRouter } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
+import { useEffect, useRef, useState } from 'react';
+import {
+  Alert,
+  Keyboard,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  ScrollView,
+  Share,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  TouchableWithoutFeedback,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 // Helper to convert DDM to Decimal Degrees for GPX
 function convertDdmToDecimal(degStr: string, minStr: string, dir: string): number {
@@ -102,6 +104,48 @@ export default function WaypointsScreen() {
   const [formLonMin, setFormLonMin] = useState<string>('05.333');
   const [formLonDir, setFormLonDir] = useState<'E' | 'W'>('E');
   const [formIcon, setFormIcon] = useState<string>('📍');
+
+  // Inline Validation States (No popup alerts)
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [latError, setLatError] = useState<string | null>(null);
+  const [lonError, setLonError] = useState<string | null>(null);
+
+  // Track focused field & modal scroll ref for auto-positioning above keypad
+  const [focusedField, setFocusedField] = useState<'name' | 'latDeg' | 'latMin' | 'lonDeg' | 'lonMin' | null>(null);
+  const [isKeyboardOpen, setIsKeyboardOpen] = useState<boolean>(false);
+  const modalScrollRef = useRef<ScrollView>(null);
+
+  // Monitor keyboard visibility so extra space below icons only appears when keypad is active
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      () => setIsKeyboardOpen(true)
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => {
+        setIsKeyboardOpen(false);
+        setFocusedField(null);
+      }
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  const handleFieldFocus = (field: 'name' | 'latDeg' | 'latMin' | 'lonDeg' | 'lonMin') => {
+    setFocusedField(field);
+    setIsKeyboardOpen(true);
+    const scrollTarget =
+      field === 'name' ? 0 :
+        field === 'latDeg' || field === 'latMin' ? 70 :
+          195;
+
+    setTimeout(() => {
+      modalScrollRef.current?.scrollTo({ y: scrollTarget, animated: true });
+    }, 120);
+  };
 
   // Icon Picker Modal State
   const [iconPickerVisible, setIconPickerVisible] = useState<boolean>(false);
@@ -174,10 +218,26 @@ export default function WaypointsScreen() {
     );
   };
 
+  // Close Modal helper
+  const handleCloseModal = () => {
+    Keyboard.dismiss();
+    setFocusedField(null);
+    setIsKeyboardOpen(false);
+    setNameError(null);
+    setLatError(null);
+    setLonError(null);
+    setModalVisible(false);
+  };
+
   // Open Edit Modal
   const handleOpenEdit = (item: WaypointItem) => {
     setIsEditing(true);
     setEditingId(item.id);
+    setFocusedField(null);
+    setIsKeyboardOpen(false);
+    setNameError(null);
+    setLatError(null);
+    setLonError(null);
     setFormName(item.name);
     setFormLatDeg(item.latDeg);
     setFormLatMin(item.latMin);
@@ -193,7 +253,12 @@ export default function WaypointsScreen() {
   const handleOpenCreate = () => {
     setIsEditing(false);
     setEditingId(null);
-    setFormName('New Fishing Spot');
+    setFocusedField(null);
+    setIsKeyboardOpen(false);
+    setNameError(null);
+    setLatError(null);
+    setLonError(null);
+    setFormName('');
     setFormLatDeg('20');
     setFormLatMin('44.572');
     setFormLatDir('N');
@@ -204,37 +269,84 @@ export default function WaypointsScreen() {
     setModalVisible(true);
   };
 
-  // Save (Create or Update)
+  // Save (Create or Update) with strict inline field validation
   const handleSave = () => {
+    let hasError = false;
+
+    // 1. Waypoint Name Validation
     if (!formName.trim()) {
-      Alert.alert('Error', 'Please enter a waypoint name.');
+      setNameError('Waypoint name is required');
+      hasError = true;
+    } else {
+      setNameError(null);
+    }
+
+    // 2. Latitude Validation (0-90° Deg, 0-59.999' Min)
+    const latD = parseInt(formLatDeg.trim(), 10);
+    const latM = parseFloat(formLatMin.trim());
+    if (isNaN(latD) || latD < 0 || latD > 90) {
+      setLatError('Latitude degrees must be between 0° and 90°');
+      hasError = true;
+    } else if (isNaN(latM) || latM < 0 || latM >= 60) {
+      setLatError("Minutes must be between 00.000' and 59.999'");
+      hasError = true;
+    } else {
+      setLatError(null);
+    }
+
+    // 3. Longitude Validation (0-180° Deg, 0-59.999' Min)
+    const lonD = parseInt(formLonDeg.trim(), 10);
+    const lonM = parseFloat(formLonMin.trim());
+    if (isNaN(lonD) || lonD < 0 || lonD > 180) {
+      setLonError('Longitude degrees must be between 0° and 180°');
+      hasError = true;
+    } else if (isNaN(lonM) || lonM < 0 || lonM >= 60) {
+      setLonError("Minutes must be between 00.000' and 59.999'");
+      hasError = true;
+    } else {
+      setLonError(null);
+    }
+
+    // If validation fails, stay on form and highlight invalid field inline (NO annoying alert popups)
+    if (hasError) {
       return;
     }
+
+    const calculatedLat = dmmToDecimal(formLatDeg.trim(), formLatMin.trim(), formLatDir);
+    const calculatedLon = dmmToDecimal(formLonDeg.trim(), formLonMin.trim(), formLonDir);
+    const currentUserId = AuthStore.getPhone() || 'captain';
+    const nowIso = new Date().toISOString();
 
     if (isEditing && editingId) {
       // Update
       const updated = waypoints.map((wp) =>
         wp.id === editingId
           ? {
-              ...wp,
-              name: formName.trim(),
-              latDeg: formLatDeg.trim(),
-              latMin: formLatMin.trim(),
-              latDir: formLatDir,
-              lonDeg: formLonDeg.trim(),
-              lonMin: formLonMin.trim(),
-              lonDir: formLonDir,
-              icon: formIcon,
-            }
+            ...wp,
+            name: formName.trim(),
+            latitude: calculatedLat,
+            longitude: calculatedLon,
+            latDeg: formLatDeg.trim(),
+            latMin: formLatMin.trim(),
+            latDir: formLatDir,
+            lonDeg: formLonDeg.trim(),
+            lonMin: formLonMin.trim(),
+            lonDir: formLonDir,
+            icon: formIcon,
+            updatedAt: nowIso,
+            syncStatus: 'pending' as const,
+          }
           : wp
       );
       updateWaypointsList(updated);
-      Alert.alert('Updated ✅', `Waypoint "${formName}" updated successfully.`);
     } else {
       // Create
       const newWp: WaypointItem = {
-        id: `wp-${Date.now()}`,
+        id: `wp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        userId: currentUserId,
         name: formName.trim(),
+        latitude: calculatedLat,
+        longitude: calculatedLon,
         latDeg: formLatDeg.trim(),
         latMin: formLatMin.trim(),
         latDir: formLatDir,
@@ -244,13 +356,16 @@ export default function WaypointsScreen() {
         icon: formIcon,
         distance: '0.00 Mi',
         bearing: '000°',
-        createdAt: new Date().toISOString().split('T')[0],
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        syncStatus: 'local',
       };
       const updated = [newWp, ...waypoints];
       updateWaypointsList(updated);
-      Alert.alert('Saved ⚓', `Waypoint "${formName}" created successfully.`);
     }
 
+    // Modal closes smoothly without interrupting popup alerts
+    Keyboard.dismiss();
     setModalVisible(false);
   };
 
@@ -548,7 +663,7 @@ export default function WaypointsScreen() {
               <View
                 key={item.id}
                 style={[styles.waypointCard, isTarget && styles.waypointCardActiveTarget]}>
-                
+
                 {/* Active Target Banner */}
                 {isTarget && (
                   <View style={styles.targetBanner}>
@@ -654,9 +769,13 @@ export default function WaypointsScreen() {
                 {
                   text: 'Mark Current Spot',
                   onPress: () => {
+                    const nowIso = new Date().toISOString();
                     const newWp: WaypointItem = {
-                      id: `wp-${Date.now()}`,
+                      id: `wp_${Date.now()}_vhf`,
+                      userId: AuthStore.getPhone() || 'captain',
                       name: `VHF Spot #${waypoints.length + 1}`,
+                      latitude: 20.7428667,
+                      longitude: 71.0718833,
                       latDeg: '20',
                       latMin: '44.572',
                       latDir: 'N',
@@ -666,11 +785,12 @@ export default function WaypointsScreen() {
                       icon: '📻',
                       distance: '0.00 Mi',
                       bearing: '000°',
-                      createdAt: new Date().toISOString().split('T')[0],
+                      createdAt: nowIso,
+                      updatedAt: nowIso,
+                      syncStatus: 'local',
                     };
                     const updated = [newWp, ...waypoints];
                     updateWaypointsList(updated);
-                    Alert.alert('Saved ⚓', 'Current boat coordinates saved.');
                   },
                 },
               ]
@@ -848,309 +968,431 @@ export default function WaypointsScreen() {
 
       {/* EDIT / CREATE WAYPOINT MODAL */}
       <Modal visible={modalVisible} transparent animationType="slide">
-        <TouchableWithoutFeedback
-          onPress={() => {
-            Keyboard.dismiss();
-            setModalVisible(false);
-          }}>
-          <View style={styles.modalOverlay}>
-            <KeyboardAvoidingView
-              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-              style={styles.modalKeyboardAvoid}>
-              <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-                <View style={styles.modalContent}>
-                  {/* Drag Handle Bar */}
-                  <View style={styles.modalHandleBar} />
+        <View style={styles.modalOverlay}>
+          {/* Tapping on the backdrop dismisses modal */}
+          <TouchableOpacity
+            style={styles.modalBackdropTapArea}
+            activeOpacity={1}
+            onPress={handleCloseModal}
+          />
 
-                  {/* Modal Header */}
-                  <View style={styles.modalHeaderRow}>
-                    <View style={styles.modalHeaderTitleWrap}>
-                      <View style={styles.modalTitleIconBox}>
-                        {isEditing ? (
-                          <ModernEditIcon size={20} color="#1D4ED8" />
-                        ) : (
-                          <ModernDistanceIcon size={20} color="#1D4ED8" />
-                        )}
-                      </View>
-                      <View>
-                        <Text style={styles.editModalTitle}>
-                          {isEditing ? 'Edit Waypoint' : 'New Waypoint'}
-                        </Text>
-                        <Text style={styles.editModalSubtitle}>
-                          Marine GPS Coordinates & Marker
-                        </Text>
-                      </View>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            style={styles.modalKeyboardAvoid}>
+            <View style={styles.modalContent}>
+              {/* Drag Handle Bar */}
+              <View style={styles.modalHandleBar} />
+
+              {/* Modal Header */}
+              <View style={styles.modalHeaderRow}>
+                <View style={styles.modalHeaderTitleWrap}>
+                  <View style={styles.modalTitleIconBox}>
+                    {isEditing ? (
+                      <ModernEditIcon size={20} color="#1D4ED8" />
+                    ) : (
+                      <ModernDistanceIcon size={20} color="#1D4ED8" />
+                    )}
+                  </View>
+                  <View>
+                    <Text style={styles.editModalTitle}>
+                      {isEditing ? 'Edit Waypoint' : 'New Waypoint'}
+                    </Text>
+                    <Text style={styles.editModalSubtitle}>
+                      Marine GPS Coordinates & Marker
+                    </Text>
+                  </View>
+                </View>
+
+                <TouchableOpacity
+                  onPress={handleCloseModal}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  style={styles.modalCloseCircle}>
+                  <ModernCloseIcon size={13} color="#64748B" />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView
+                ref={modalScrollRef}
+                showsVerticalScrollIndicator={true}
+                contentContainerStyle={[
+                  styles.modalScrollBody,
+                  isKeyboardOpen && styles.modalScrollBodyKeyboardOpen,
+                ]}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode="none"
+                nestedScrollEnabled={true}>
+                {/* NAME INPUT BOX WITH INLINE SAVE BUTTON */}
+                <View style={styles.formSection}>
+                  <View style={styles.nameHeaderRow}>
+                    <Text style={styles.formLabel}>WAYPOINT NAME</Text>
+                    <View style={styles.quickSaveBadge}>
+                      <Text style={styles.quickSaveBadgeText}>Quick Save</Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.nameInputRow}>
+                    <View
+                      style={[
+                        styles.nameInputContainer,
+                        focusedField === 'name' && styles.nameInputContainerActive,
+                        nameError ? { borderColor: '#EF4444', borderWidth: 1.5 } : null,
+                      ]}>
+                      <ModernTagIcon size={16} color={nameError ? '#EF4444' : focusedField === 'name' ? '#1D4ED8' : '#3B82F6'} />
+                      <TextInput
+                        value={formName}
+                        onChangeText={(t) => {
+                          setFormName(t);
+                          if (nameError) setNameError(null);
+                        }}
+                        placeholder="e.g. Sagar Kripa Spot"
+                        placeholderTextColor="#94A3B8"
+                        style={styles.nameTextInput}
+                        onFocus={() => handleFieldFocus('name')}
+                        onBlur={() => setFocusedField((cur) => (cur === 'name' ? null : cur))}
+                      />
+                      {formName.trim().length > 0 && (
+                        <TouchableOpacity
+                          onPress={() => {
+                            setFormName('');
+                            if (nameError) setNameError(null);
+                          }}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          style={styles.clearNameBtn}>
+                          <ModernCloseIcon size={11} color="#94A3B8" />
+                        </TouchableOpacity>
+                      )}
                     </View>
 
                     <TouchableOpacity
-                      onPress={() => {
-                        Keyboard.dismiss();
-                        setModalVisible(false);
-                      }}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                      style={styles.modalCloseCircle}>
-                      <ModernCloseIcon size={13} color="#64748B" />
+                      activeOpacity={0.82}
+                      onPress={handleSave}
+                      style={styles.inlineNameSaveBtn}>
+                      <ModernCheckIcon size={15} color="#FFFFFF" />
+                      <Text style={styles.inlineNameSaveBtnText}>Save</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Inline Error for Name */}
+                  {nameError ? (
+                    <View style={{ marginTop: 6, flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                      <Text style={{ fontSize: 12, color: '#EF4444', fontWeight: '700' }}>⚠️ {nameError}</Text>
+                    </View>
+                  ) : null}
+                </View>
+
+                {/* LATITUDE CARD */}
+                <View
+                  style={[
+                    styles.coordCard,
+                    (focusedField === 'latDeg' || focusedField === 'latMin') && styles.coordCardActive,
+                    latError ? { borderColor: '#EF4444', borderWidth: 1.5 } : null,
+                  ]}>
+                  <View style={styles.coordCardHeader}>
+                    <View style={styles.coordTitleWithBadge}>
+                      <Text style={styles.coordCardTitle}>LATITUDE</Text>
+                      {(focusedField === 'latDeg' || focusedField === 'latMin') && (
+                        <View style={styles.activeFieldBadge}>
+                          <Text style={styles.activeFieldBadgeText}>Editing</Text>
+                        </View>
+                      )}
+                    </View>
+                    <View style={styles.coordTag}>
+                      <Text style={styles.coordTagText}>{formLatDir}</Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.coordInputsRow}>
+                    {/* Degrees Box */}
+                    <View
+                      style={[
+                        styles.degreeBoxWrap,
+                        focusedField === 'latDeg' && styles.inputBoxWrapActive,
+                        latError ? { borderColor: '#EF4444' } : null,
+                      ]}>
+                      <Text
+                        style={[
+                          styles.inputMicroLabel,
+                          focusedField === 'latDeg' && styles.inputMicroLabelActive,
+                          latError ? { color: '#EF4444' } : null,
+                        ]}>
+                        DEGREES
+                      </Text>
+                      <View style={styles.innerInputRow}>
+                        <TextInput
+                          value={formLatDeg}
+                          onChangeText={(t) => {
+                            setFormLatDeg(t);
+                            if (latError) setLatError(null);
+                          }}
+                          keyboardType="number-pad"
+                          maxLength={3}
+                          style={styles.coordNumInput}
+                          onFocus={() => handleFieldFocus('latDeg')}
+                          onBlur={() => setFocusedField((cur) => (cur === 'latDeg' ? null : cur))}
+                        />
+                        <Text style={styles.unitSymbolText}>°</Text>
+                      </View>
+                    </View>
+
+                    {/* Minutes Box */}
+                    <View
+                      style={[
+                        styles.minutesBoxWrap,
+                        focusedField === 'latMin' && styles.inputBoxWrapActive,
+                        latError ? { borderColor: '#EF4444' } : null,
+                      ]}>
+                      <Text
+                        style={[
+                          styles.inputMicroLabel,
+                          focusedField === 'latMin' && styles.inputMicroLabelActive,
+                          latError ? { color: '#EF4444' } : null,
+                        ]}>
+                        MINUTES
+                      </Text>
+                      <View style={styles.innerInputRow}>
+                        <TextInput
+                          value={formLatMin}
+                          onChangeText={(t) => {
+                            setFormLatMin(t);
+                            if (latError) setLatError(null);
+                          }}
+                          keyboardType="decimal-pad"
+                          style={styles.coordNumInput}
+                          onFocus={() => handleFieldFocus('latMin')}
+                          onBlur={() => setFocusedField((cur) => (cur === 'latMin' ? null : cur))}
+                        />
+                        <Text style={styles.unitSymbolText}>&apos;</Text>
+                      </View>
+                    </View>
+
+                    {/* Interactive Direction Switch (N / S) */}
+                    <View style={styles.dirToggleContainer}>
+                      <TouchableOpacity
+                        onPress={() => setFormLatDir('N')}
+                        style={[
+                          styles.dirToggleHalf,
+                          formLatDir === 'N' && styles.dirToggleHalfActive,
+                        ]}>
+                        <Text
+                          style={[
+                            styles.dirToggleText,
+                            formLatDir === 'N' && styles.dirToggleTextActive,
+                          ]}>
+                          N
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => setFormLatDir('S')}
+                        style={[
+                          styles.dirToggleHalf,
+                          formLatDir === 'S' && styles.dirToggleHalfActive,
+                        ]}>
+                        <Text
+                          style={[
+                            styles.dirToggleText,
+                            formLatDir === 'S' && styles.dirToggleTextActive,
+                          ]}>
+                          S
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  {/* Inline Error for Latitude */}
+                  {latError ? (
+                    <View style={{ marginTop: 8, flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                      <Text style={{ fontSize: 12, color: '#EF4444', fontWeight: '700' }}>⚠️ {latError}</Text>
+                    </View>
+                  ) : null}
+                </View>
+
+                {/* LONGITUDE CARD */}
+                <View
+                  style={[
+                    styles.coordCard,
+                    (focusedField === 'lonDeg' || focusedField === 'lonMin') && styles.coordCardActive,
+                    lonError ? { borderColor: '#EF4444', borderWidth: 1.5 } : null,
+                  ]}>
+                  <View style={styles.coordCardHeader}>
+                    <View style={styles.coordTitleWithBadge}>
+                      <Text style={styles.coordCardTitle}>LONGITUDE</Text>
+                      {(focusedField === 'lonDeg' || focusedField === 'lonMin') && (
+                        <View style={styles.activeFieldBadge}>
+                          <Text style={styles.activeFieldBadgeText}>Editing</Text>
+                        </View>
+                      )}
+                    </View>
+                    <View style={styles.coordTag}>
+                      <Text style={styles.coordTagText}>{formLonDir}</Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.coordInputsRow}>
+                    {/* Degrees Box */}
+                    <View
+                      style={[
+                        styles.degreeBoxWrap,
+                        focusedField === 'lonDeg' && styles.inputBoxWrapActive,
+                        lonError ? { borderColor: '#EF4444' } : null,
+                      ]}>
+                      <Text
+                        style={[
+                          styles.inputMicroLabel,
+                          focusedField === 'lonDeg' && styles.inputMicroLabelActive,
+                          lonError ? { color: '#EF4444' } : null,
+                        ]}>
+                        DEGREES
+                      </Text>
+                      <View style={styles.innerInputRow}>
+                        <TextInput
+                          value={formLonDeg}
+                          onChangeText={(t) => {
+                            setFormLonDeg(t);
+                            if (lonError) setLonError(null);
+                          }}
+                          keyboardType="number-pad"
+                          maxLength={3}
+                          style={styles.coordNumInput}
+                          onFocus={() => handleFieldFocus('lonDeg')}
+                          onBlur={() => setFocusedField((cur) => (cur === 'lonDeg' ? null : cur))}
+                        />
+                        <Text style={styles.unitSymbolText}>°</Text>
+                      </View>
+                    </View>
+
+                    {/* Minutes Box */}
+                    <View
+                      style={[
+                        styles.minutesBoxWrap,
+                        focusedField === 'lonMin' && styles.inputBoxWrapActive,
+                        lonError ? { borderColor: '#EF4444' } : null,
+                      ]}>
+                      <Text
+                        style={[
+                          styles.inputMicroLabel,
+                          focusedField === 'lonMin' && styles.inputMicroLabelActive,
+                          lonError ? { color: '#EF4444' } : null,
+                        ]}>
+                        MINUTES
+                      </Text>
+                      <View style={styles.innerInputRow}>
+                        <TextInput
+                          value={formLonMin}
+                          onChangeText={(t) => {
+                            setFormLonMin(t);
+                            if (lonError) setLonError(null);
+                          }}
+                          keyboardType="decimal-pad"
+                          style={styles.coordNumInput}
+                          onFocus={() => handleFieldFocus('lonMin')}
+                          onBlur={() => setFocusedField((cur) => (cur === 'lonMin' ? null : cur))}
+                        />
+                        <Text style={styles.unitSymbolText}>&apos;</Text>
+                      </View>
+                    </View>
+
+                    {/* Interactive Direction Switch (E / W) */}
+                    <View style={styles.dirToggleContainer}>
+                      <TouchableOpacity
+                        onPress={() => setFormLonDir('E')}
+                        style={[
+                          styles.dirToggleHalf,
+                          formLonDir === 'E' && styles.dirToggleHalfActive,
+                        ]}>
+                        <Text
+                          style={[
+                            styles.dirToggleText,
+                            formLonDir === 'E' && styles.dirToggleTextActive,
+                          ]}>
+                          E
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => setFormLonDir('W')}
+                        style={[
+                          styles.dirToggleHalf,
+                          formLonDir === 'W' && styles.dirToggleHalfActive,
+                        ]}>
+                        <Text
+                          style={[
+                            styles.dirToggleText,
+                            formLonDir === 'W' && styles.dirToggleTextActive,
+                          ]}>
+                          W
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  {/* Inline Error for Longitude */}
+                  {lonError ? (
+                    <View style={{ marginTop: 8, flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                      <Text style={{ fontSize: 12, color: '#EF4444', fontWeight: '700' }}>⚠️ {lonError}</Text>
+                    </View>
+                  ) : null}
+                </View>
+
+                {/* INLINE ICON PICKER ROW */}
+                <View style={styles.formSection}>
+                  <View style={styles.iconSectionHeader}>
+                    <Text style={styles.formLabel}>SELECT MARKER ICON</Text>
+                    <TouchableOpacity
+                      activeOpacity={0.7}
+                      onPress={() => setIconPickerVisible(true)}>
+                      <Text style={styles.viewAllIconsLink}>More Icons ▾</Text>
                     </TouchableOpacity>
                   </View>
 
                   <ScrollView
-                    showsVerticalScrollIndicator={false}
-                    contentContainerStyle={styles.modalScrollBody}
-                    keyboardShouldPersistTaps="handled"
-                    keyboardDismissMode="on-drag">
-                    {/* NAME INPUT BOX WITH INLINE SAVE BUTTON */}
-                    <View style={styles.formSection}>
-                      <View style={styles.nameHeaderRow}>
-                        <Text style={styles.formLabel}>WAYPOINT NAME</Text>
-                        <View style={styles.quickSaveBadge}>
-                          <Text style={styles.quickSaveBadgeText}>Quick Save</Text>
-                        </View>
-                      </View>
-
-                      <View style={styles.nameInputRow}>
-                        <View style={styles.nameInputContainer}>
-                          <ModernTagIcon size={16} color="#3B82F6" />
-                          <TextInput
-                            value={formName}
-                            onChangeText={setFormName}
-                            placeholder="e.g. Sagar Kripa Spot"
-                            placeholderTextColor="#94A3B8"
-                            style={styles.nameTextInput}
-                            returnKeyType="done"
-                            onSubmitEditing={handleSave}
-                          />
-                          {formName.trim().length > 0 && (
-                            <TouchableOpacity
-                              onPress={() => setFormName('')}
-                              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                              style={styles.clearNameBtn}>
-                              <ModernCloseIcon size={11} color="#94A3B8" />
-                            </TouchableOpacity>
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.inlineIconScroll}>
+                    {AVAILABLE_ICONS.map((ic) => {
+                      const isSelected = formIcon === ic;
+                      return (
+                        <TouchableOpacity
+                          key={ic}
+                          activeOpacity={0.8}
+                          onPress={() => setFormIcon(ic)}
+                          style={[
+                            styles.inlineIconBtn,
+                            isSelected && styles.inlineIconBtnSelected,
+                          ]}>
+                          <Text style={styles.inlineIconEmoji}>{ic}</Text>
+                          {isSelected && (
+                            <View style={styles.selectedCheckPip}>
+                              <ModernCheckIcon size={10} color="#FFFFFF" />
+                            </View>
                           )}
-                        </View>
-
-                        <TouchableOpacity
-                          activeOpacity={0.82}
-                          onPress={handleSave}
-                          style={styles.inlineNameSaveBtn}>
-                          <ModernCheckIcon size={15} color="#FFFFFF" />
-                          <Text style={styles.inlineNameSaveBtnText}>Save</Text>
                         </TouchableOpacity>
-                      </View>
-                    </View>
-
-                    {/* LATITUDE CARD */}
-                    <View style={styles.coordCard}>
-                      <View style={styles.coordCardHeader}>
-                        <Text style={styles.coordCardTitle}>LATITUDE</Text>
-                        <View style={styles.coordTag}>
-                          <Text style={styles.coordTagText}>{formLatDir}</Text>
-                        </View>
-                      </View>
-
-                      <View style={styles.coordInputsRow}>
-                        {/* Degrees Box */}
-                        <View style={styles.degreeBoxWrap}>
-                          <Text style={styles.inputMicroLabel}>DEGREES</Text>
-                          <View style={styles.innerInputRow}>
-                            <TextInput
-                              value={formLatDeg}
-                              onChangeText={setFormLatDeg}
-                              keyboardType="number-pad"
-                              maxLength={3}
-                              style={styles.coordNumInput}
-                            />
-                            <Text style={styles.unitSymbolText}>°</Text>
-                          </View>
-                        </View>
-
-                        {/* Minutes Box */}
-                        <View style={styles.minutesBoxWrap}>
-                          <Text style={styles.inputMicroLabel}>MINUTES</Text>
-                          <View style={styles.innerInputRow}>
-                            <TextInput
-                              value={formLatMin}
-                              onChangeText={setFormLatMin}
-                              keyboardType="decimal-pad"
-                              style={styles.coordNumInput}
-                            />
-                            <Text style={styles.unitSymbolText}>&apos;</Text>
-                          </View>
-                        </View>
-
-                        {/* Interactive Direction Switch (N / S) */}
-                        <View style={styles.dirToggleContainer}>
-                          <TouchableOpacity
-                            onPress={() => setFormLatDir('N')}
-                            style={[
-                              styles.dirToggleHalf,
-                              formLatDir === 'N' && styles.dirToggleHalfActive,
-                            ]}>
-                            <Text
-                              style={[
-                                styles.dirToggleText,
-                                formLatDir === 'N' && styles.dirToggleTextActive,
-                              ]}>
-                              N
-                            </Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            onPress={() => setFormLatDir('S')}
-                            style={[
-                              styles.dirToggleHalf,
-                              formLatDir === 'S' && styles.dirToggleHalfActive,
-                            ]}>
-                            <Text
-                              style={[
-                                styles.dirToggleText,
-                                formLatDir === 'S' && styles.dirToggleTextActive,
-                              ]}>
-                              S
-                            </Text>
-                          </TouchableOpacity>
-                        </View>
-                      </View>
-                    </View>
-
-                    {/* LONGITUDE CARD */}
-                    <View style={styles.coordCard}>
-                      <View style={styles.coordCardHeader}>
-                        <Text style={styles.coordCardTitle}>LONGITUDE</Text>
-                        <View style={styles.coordTag}>
-                          <Text style={styles.coordTagText}>{formLonDir}</Text>
-                        </View>
-                      </View>
-
-                      <View style={styles.coordInputsRow}>
-                        {/* Degrees Box */}
-                        <View style={styles.degreeBoxWrap}>
-                          <Text style={styles.inputMicroLabel}>DEGREES</Text>
-                          <View style={styles.innerInputRow}>
-                            <TextInput
-                              value={formLonDeg}
-                              onChangeText={setFormLonDeg}
-                              keyboardType="number-pad"
-                              maxLength={3}
-                              style={styles.coordNumInput}
-                            />
-                            <Text style={styles.unitSymbolText}>°</Text>
-                          </View>
-                        </View>
-
-                        {/* Minutes Box */}
-                        <View style={styles.minutesBoxWrap}>
-                          <Text style={styles.inputMicroLabel}>MINUTES</Text>
-                          <View style={styles.innerInputRow}>
-                            <TextInput
-                              value={formLonMin}
-                              onChangeText={setFormLonMin}
-                              keyboardType="decimal-pad"
-                              style={styles.coordNumInput}
-                            />
-                            <Text style={styles.unitSymbolText}>&apos;</Text>
-                          </View>
-                        </View>
-
-                        {/* Interactive Direction Switch (E / W) */}
-                        <View style={styles.dirToggleContainer}>
-                          <TouchableOpacity
-                            onPress={() => setFormLonDir('E')}
-                            style={[
-                              styles.dirToggleHalf,
-                              formLonDir === 'E' && styles.dirToggleHalfActive,
-                            ]}>
-                            <Text
-                              style={[
-                                styles.dirToggleText,
-                                formLonDir === 'E' && styles.dirToggleTextActive,
-                              ]}>
-                              E
-                            </Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            onPress={() => setFormLonDir('W')}
-                            style={[
-                              styles.dirToggleHalf,
-                              formLonDir === 'W' && styles.dirToggleHalfActive,
-                            ]}>
-                            <Text
-                              style={[
-                                styles.dirToggleText,
-                                formLonDir === 'W' && styles.dirToggleTextActive,
-                              ]}>
-                              W
-                            </Text>
-                          </TouchableOpacity>
-                        </View>
-                      </View>
-                    </View>
-
-                    {/* INLINE ICON PICKER ROW */}
-                    <View style={styles.formSection}>
-                      <View style={styles.iconSectionHeader}>
-                        <Text style={styles.formLabel}>SELECT MARKER ICON</Text>
-                        <TouchableOpacity
-                          activeOpacity={0.7}
-                          onPress={() => setIconPickerVisible(true)}>
-                          <Text style={styles.viewAllIconsLink}>More Icons ▾</Text>
-                        </TouchableOpacity>
-                      </View>
-
-                      <ScrollView
-                        horizontal
-                        showsHorizontalScrollIndicator={false}
-                        contentContainerStyle={styles.inlineIconScroll}>
-                        {AVAILABLE_ICONS.map((ic) => {
-                          const isSelected = formIcon === ic;
-                          return (
-                            <TouchableOpacity
-                              key={ic}
-                              activeOpacity={0.8}
-                              onPress={() => setFormIcon(ic)}
-                              style={[
-                                styles.inlineIconBtn,
-                                isSelected && styles.inlineIconBtnSelected,
-                              ]}>
-                              <Text style={styles.inlineIconEmoji}>{ic}</Text>
-                              {isSelected && (
-                                <View style={styles.selectedCheckPip}>
-                                  <ModernCheckIcon size={10} color="#FFFFFF" />
-                                </View>
-                              )}
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </ScrollView>
-                    </View>
+                      );
+                    })}
                   </ScrollView>
-
-                  {/* BOTTOM BUTTONS: CANCEL & SAVE */}
-                  <View style={styles.modalButtonsRow}>
-                    <TouchableOpacity
-                      activeOpacity={0.8}
-                      onPress={() => {
-                        Keyboard.dismiss();
-                        setModalVisible(false);
-                      }}
-                      style={styles.cancelBtn}>
-                      <Text style={styles.cancelBtnText}>Cancel</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      activeOpacity={0.85}
-                      onPress={handleSave}
-                      style={styles.saveBtn}>
-                      <ModernCheckIcon size={16} color="#FFFFFF" />
-                      <Text style={styles.saveBtnText}>
-                        {isEditing ? 'Save Changes' : 'Save Waypoint'}
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
                 </View>
-              </TouchableWithoutFeedback>
-            </KeyboardAvoidingView>
-          </View>
-        </TouchableWithoutFeedback>
+              </ScrollView>
+
+              {/* BOTTOM BUTTONS: CANCEL & SAVE */}
+              <View style={styles.modalButtonsRow}>
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={handleCloseModal}
+                  style={styles.cancelBtn}>
+                  <Text style={styles.cancelBtnText}>Cancel</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={handleSave}
+                  style={styles.saveBtn}>
+                  <ModernCheckIcon size={16} color="#FFFFFF" />
+                  <Text style={styles.saveBtnText}>
+                    {isEditing ? 'Save Changes' : 'Save Waypoint'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
       </Modal>
 
       {/* ICON PICKER SUB-MODAL */}
@@ -1720,9 +1962,12 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(15, 23, 42, 0.65)',
     justifyContent: 'flex-end',
   },
+  modalBackdropTapArea: {
+    ...StyleSheet.absoluteFillObject,
+  },
   modalKeyboardAvoid: {
     width: '100%',
-    maxHeight: '94%',
+    maxHeight: '92%',
     justifyContent: 'flex-end',
   },
   modalContent: {
@@ -1733,7 +1978,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 28,
     paddingHorizontal: 20,
     paddingTop: 12,
-    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+    paddingBottom: Platform.OS === 'ios' ? 24 : 14,
     shadowColor: '#000',
     shadowOpacity: 0.3,
     shadowRadius: 16,
@@ -1791,9 +2036,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   modalScrollBody: {
-    paddingTop: 16,
-    paddingBottom: 20,
-    gap: 16,
+    paddingTop: 14,
+    paddingBottom: 16, // Clean and compact when keypad is closed
+    gap: 14,
+  },
+  modalScrollBodyKeyboardOpen: {
+    paddingBottom: 260, // Extra space only active when keypad is open to allow smooth scrolling above keypad
   },
 
   // FORM INPUTS
@@ -1843,6 +2091,11 @@ const styles = StyleSheet.create({
     height: 48,
     gap: 8,
   },
+  nameInputContainerActive: {
+    borderColor: '#2563EB',
+    backgroundColor: '#F0F7FF',
+    borderWidth: 1.8,
+  },
   nameTextInput: {
     flex: 1,
     fontSize: 15,
@@ -1889,10 +2142,31 @@ const styles = StyleSheet.create({
     borderColor: '#E2E8F0',
     gap: 10,
   },
+  coordCardActive: {
+    borderColor: '#93C5FD',
+    backgroundColor: '#F0F7FF',
+  },
   coordCardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+  },
+  coordTitleWithBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  activeFieldBadge: {
+    backgroundColor: '#DBEAFE',
+    paddingHorizontal: 6,
+    paddingVertical: 1.5,
+    borderRadius: 6,
+  },
+  activeFieldBadgeText: {
+    fontSize: 9.5,
+    fontWeight: '800',
+    color: '#1D4ED8',
+    letterSpacing: 0.3,
   },
   coordCardTitle: {
     fontSize: 11.5,
@@ -1936,12 +2210,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
+  inputBoxWrapActive: {
+    borderColor: '#2563EB',
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1.6,
+  },
   inputMicroLabel: {
     fontSize: 9,
     fontWeight: '800',
     color: '#94A3B8',
     letterSpacing: 0.4,
     marginBottom: 2,
+  },
+  inputMicroLabelActive: {
+    color: '#1D4ED8',
+    fontWeight: '900',
   },
   innerInputRow: {
     flexDirection: 'row',

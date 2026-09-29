@@ -1,21 +1,7 @@
-import { useRouter } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
-import React, { useEffect, useState } from 'react';
-import {
-  Alert,
-  Modal,
-  Platform,
-  ScrollView,
-  StyleSheet,
-  Switch,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  TouchableWithoutFeedback,
-  View,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { PremiumUpgradeModal } from '@/components/marine/PremiumUpgradeModal';
 import { BackButton } from '@/components/ui/back-button';
+import { AuthStore } from '@/services/authStore';
+import { GpsService } from '@/services/gpsService';
 import {
   AppSettings,
   AppTheme,
@@ -25,7 +11,24 @@ import {
   SpeechLanguage,
   UnitSystem,
 } from '@/services/settingsStore';
+import { SubscriptionStore } from '@/services/subscriptionStore';
 import { getWaypoints, setGlobalWaypoints } from '@/services/waypointStore';
+import { useRouter } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
+import { useEffect, useState } from 'react';
+import {
+  Alert,
+  Modal,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  TouchableWithoutFeedback,
+  View
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -38,22 +41,40 @@ export default function SettingsScreen() {
   const [profileModalVisible, setProfileModalVisible] = useState<boolean>(false);
   const [posFormatModalVisible, setPosFormatModalVisible] = useState<boolean>(false);
   const [posDatumModalVisible, setPosDatumModalVisible] = useState<boolean>(false);
+  const [premiumModalVisible, setPremiumModalVisible] = useState<boolean>(false);
 
-  // Profile Edit State
-  const [profileName, setProfileName] = useState<string>(settings.profile.name);
-  const [profileCallsign, setProfileCallsign] = useState<string>(settings.profile.callsign);
-  const [profilePort, setProfilePort] = useState<string>(settings.profile.homePort);
+  // Captain Profile State (Logged-In User)
+  const [captainName, setCaptainName] = useState<string>(() => AuthStore.getUserName());
+  const [authPhone, setAuthPhone] = useState<string>(() => AuthStore.getPhone() || '9876543210');
+  const [subState, setSubState] = useState(() => SubscriptionStore.getState());
+  const [isEcoMode, setIsEcoMode] = useState<boolean>(() => GpsService.isEcoMode());
+  const [devFeedback, setDevFeedback] = useState<string | null>(null);
 
-  // Subscribe to settings changes for instant reactivity
+  const triggerDevFeedback = (msg: string) => {
+    setDevFeedback(msg);
+    setTimeout(() => {
+      setDevFeedback(null);
+    }, 4000);
+  };
+
+  // Subscribe to settings and auth changes for instant reactivity
   useEffect(() => {
-    const unsubscribe = SettingsStore.subscribe((newSettings) => {
+    const unsubSettings = SettingsStore.subscribe((newSettings) => {
       setSettings(newSettings);
       setIsNight(SettingsStore.isNightMode());
-      setProfileName(newSettings.profile.name);
-      setProfileCallsign(newSettings.profile.callsign);
-      setProfilePort(newSettings.profile.homePort);
     });
-    return unsubscribe;
+    const unsubAuth = AuthStore.subscribe((auth) => {
+      setCaptainName(auth.userName || 'Captain Sagar');
+      setAuthPhone(auth.phoneNumber || '9876543210');
+    });
+    const unsubSub = SubscriptionStore.subscribe((sub) => {
+      setSubState(sub);
+    });
+    return () => {
+      unsubSettings();
+      unsubAuth();
+      unsubSub();
+    };
   }, []);
 
   // Update handler
@@ -61,18 +82,32 @@ export default function SettingsScreen() {
     SettingsStore.updateSettings(partial);
   };
 
-  // Profile Save
-  const handleSaveProfile = () => {
-    handleUpdate({
-      profile: {
-        ...settings.profile,
-        name: profileName.trim() || settings.profile.name,
-        callsign: profileCallsign.trim() || settings.profile.callsign,
-        homePort: profilePort.trim() || settings.profile.homePort,
-      },
-    });
+  // Toggle Sea Battery Saver
+  const handleToggleEcoMode = (val: boolean) => {
+    setIsEcoMode(val);
+    GpsService.setEcoMode(val);
+  };
+
+  // Captain Profile Save
+  const handleSaveCaptainProfile = () => {
+    AuthStore.updateProfile(captainName);
     setProfileModalVisible(false);
-    Alert.alert('Profile Saved ⚓', 'Vessel information updated successfully.');
+  };
+
+  // Sign Out Handler
+  const handleSignOut = () => {
+    setProfileModalVisible(false);
+    Alert.alert('Sign Out 🚪', 'Are you sure you want to sign out from your captain account?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Sign Out',
+        style: 'destructive',
+        onPress: () => {
+          AuthStore.logout();
+          router.replace('/login');
+        },
+      },
+    ]);
   };
 
   // Backup & GPX Tools
@@ -210,41 +245,41 @@ export default function SettingsScreen() {
   // Marine Palette
   const colors = isNight
     ? {
-        bg: '#0B0F17',
-        cardBg: '#131A26',
-        cardBorder: '#1E293B',
-        headerBg: '#131A26',
-        headerBorder: '#1E293B',
-        textPrimary: '#F1F5F9',
-        textSecondary: '#94A3B8',
-        accentCyan: '#00E5FF',
-        accentBlue: '#0091EA',
-        pillBg: '#1E293B',
-        pillActiveBg: '#0091EA',
-        pillActiveText: '#FFFFFF',
-        dangerBg: 'rgba(239, 68, 68, 0.08)',
-        dangerBorder: 'rgba(239, 68, 68, 0.25)',
-        dangerText: '#F87171',
-        divider: '#1E293B',
-      }
+      bg: '#0B0F17',
+      cardBg: '#131A26',
+      cardBorder: '#1E293B',
+      headerBg: '#131A26',
+      headerBorder: '#1E293B',
+      textPrimary: '#F1F5F9',
+      textSecondary: '#94A3B8',
+      accentCyan: '#00E5FF',
+      accentBlue: '#0091EA',
+      pillBg: '#1E293B',
+      pillActiveBg: '#0091EA',
+      pillActiveText: '#FFFFFF',
+      dangerBg: 'rgba(239, 68, 68, 0.08)',
+      dangerBorder: 'rgba(239, 68, 68, 0.25)',
+      dangerText: '#F87171',
+      divider: '#1E293B',
+    }
     : {
-        bg: '#F8FAFC',
-        cardBg: '#FFFFFF',
-        cardBorder: '#E2E8F0',
-        headerBg: '#FFFFFF',
-        headerBorder: '#E2E8F0',
-        textPrimary: '#0F172A',
-        textSecondary: '#64748B',
-        accentCyan: '#00838F',
-        accentBlue: '#0288D1',
-        pillBg: '#F1F5F9',
-        pillActiveBg: '#0288D1',
-        pillActiveText: '#FFFFFF',
-        dangerBg: '#FEF2F2',
-        dangerBorder: '#FECACA',
-        dangerText: '#DC2626',
-        divider: '#F1F5F9',
-      };
+      bg: '#F8FAFC',
+      cardBg: '#FFFFFF',
+      cardBorder: '#E2E8F0',
+      headerBg: '#FFFFFF',
+      headerBorder: '#E2E8F0',
+      textPrimary: '#0F172A',
+      textSecondary: '#64748B',
+      accentCyan: '#00838F',
+      accentBlue: '#0288D1',
+      pillBg: '#F1F5F9',
+      pillActiveBg: '#0288D1',
+      pillActiveText: '#FFFFFF',
+      dangerBg: '#FEF2F2',
+      dangerBorder: '#FECACA',
+      dangerText: '#DC2626',
+      divider: '#F1F5F9',
+    };
 
   return (
     <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={[styles.container, { backgroundColor: colors.bg }]}>
@@ -270,25 +305,34 @@ export default function SettingsScreen() {
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}>
-        {/* 1. Vessel Profile Card */}
+        {/* 1. Logged-in Captain User Profile Card */}
         <TouchableOpacity
           activeOpacity={0.8}
           onPress={() => setProfileModalVisible(true)}
           style={[styles.profileCard, { backgroundColor: colors.cardBg, borderColor: colors.cardBorder }]}>
-          <View style={styles.profileIconCircle}>
-            <Text style={styles.profileBoatIcon}>⚓</Text>
+          <View style={[styles.profileIconCircle, { backgroundColor: isNight ? '#0F2744' : '#E0F2FE' }]}>
+            <Text style={{ fontSize: 26 }}>👨‍✈️</Text>
           </View>
           <View style={styles.profileTextCol}>
             <View style={styles.profileTitleRow}>
               <Text style={[styles.vesselName, { color: colors.textPrimary }]}>
-                {settings.profile.name}
+                {captainName}
               </Text>
-              <View style={styles.verifiedBadge}>
-                <Text style={styles.verifiedText}>FISHING VESSEL</Text>
+              <View style={[
+                styles.verifiedBadge,
+                { backgroundColor: subState.isSubscribed ? '#F59E0B' : subState.trialActive ? '#0284C7' : '#EF4444' }
+              ]}>
+                <Text style={styles.verifiedText}>
+                  {subState.isSubscribed
+                    ? 'PRO CAPTAIN ⭐'
+                    : subState.trialActive
+                      ? `TRIAL (${SubscriptionStore.getTrialDaysRemaining()}d)`
+                      : 'EXPIRED 🔒'}
+                </Text>
               </View>
             </View>
             <Text style={[styles.vesselSub, { color: colors.textSecondary }]}>
-              Callsign: {settings.profile.callsign} • Port: {settings.profile.homePort}
+              Mobile: +91 {authPhone} • Tap to view profile & sign out
             </Text>
           </View>
           <Text style={[styles.profileArrow, { color: colors.textSecondary }]}>›</Text>
@@ -383,8 +427,8 @@ export default function SettingsScreen() {
                 {settings.posFormat === 'DMF'
                   ? "DD° MM.MMM' (Marine Standard)"
                   : settings.posFormat === 'DMS'
-                  ? 'DD° MM\' SS.S" (Nautical)'
-                  : 'DD.DDDDD° (Decimal)'}
+                    ? 'DD° MM\' SS.S" (Nautical)'
+                    : 'DD.DDDDD° (Decimal)'}
               </Text>
             </View>
             <View style={styles.clickableRight}>
@@ -426,6 +470,29 @@ export default function SettingsScreen() {
               value={settings.keepScreenOn}
               onValueChange={(val) => handleUpdate({ keepScreenOn: val })}
               trackColor={{ false: isNight ? '#334155' : '#CBD5E1', true: colors.accentBlue }}
+              thumbColor="#FFFFFF"
+            />
+          </View>
+
+          <View style={[styles.innerDivider, { backgroundColor: colors.divider }]} />
+
+          {/* Setting 6: Sea Battery Optimizer */}
+          <View style={styles.cardItem}>
+            <View style={styles.itemLabelCol}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Text style={[styles.itemTitle, { color: colors.textPrimary }]}>Sea Battery Optimizer 🔋</Text>
+                <View style={{ backgroundColor: '#10B981', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}>
+                  <Text style={{ fontSize: 9, fontWeight: '800', color: '#FFFFFF' }}>OFFSHORE ECO</Text>
+                </View>
+              </View>
+              <Text style={[styles.itemDesc, { color: colors.textSecondary }]}>
+                Reduces GPS & compass polling to save maximum battery at deep sea
+              </Text>
+            </View>
+            <Switch
+              value={isEcoMode}
+              onValueChange={handleToggleEcoMode}
+              trackColor={{ false: isNight ? '#334155' : '#CBD5E1', true: '#10B981' }}
               thumbColor="#FFFFFF"
             />
           </View>
@@ -583,7 +650,232 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* 6. About Section */}
+        {/* 6. Developer Option & Subscription Testing Lab */}
+        <View style={styles.sectionHeaderRow}>
+          <Text style={[styles.sectionTitle, { color: colors.accentCyan }]}>
+            🛠️ DEVELOPER OPTION & SUBSCRIPTION LAB
+          </Text>
+        </View>
+
+        <View style={[styles.devLabCard, { backgroundColor: colors.cardBg, borderColor: isNight ? '#0284C7' : '#0284C7' }]}>
+          <View style={styles.devLabHeader}>
+            <Text style={styles.devLabEmoji}>🧪</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.devLabTitle, { color: colors.textPrimary }]}>
+                Subscription & Expiry Testing Console
+              </Text>
+              <Text style={[styles.devLabSubtitle, { color: colors.textSecondary }]}>
+                Switch plans, simulate expiry, test lockout & verify payment flows.
+              </Text>
+            </View>
+          </View>
+
+          {/* Feedback Toast */}
+          {devFeedback && (
+            <View style={styles.devToast}>
+              <Text style={styles.devToastText}>⚡ {devFeedback}</Text>
+            </View>
+          )}
+
+          {/* Live Plan & Expiry Details Card */}
+          <View
+            style={[
+              styles.devStatusBox,
+              {
+                backgroundColor: isNight ? '#070D1E' : '#F1F5F9',
+                borderColor: isNight ? '#1E293B' : '#CBD5E1',
+              },
+            ]}>
+            <View style={styles.devStatusRow}>
+              <Text style={[styles.devStatusLabel, { color: colors.textSecondary }]}>Access Status:</Text>
+              <View
+                style={[
+                  styles.devStatusPill,
+                  {
+                    backgroundColor: subState.isSubscribed
+                      ? '#10B981'
+                      : subState.isTrialExpired
+                      ? '#EF4444'
+                      : '#0284C7',
+                  },
+                ]}>
+                <Text style={styles.devStatusPillText}>
+                  {subState.isSubscribed
+                    ? '👑 PRO ACTIVE'
+                    : subState.isTrialExpired
+                    ? '🔒 TRIAL EXPIRED (LOCKED)'
+                    : '🛡️ 7-DAY TRIAL ACTIVE'}
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.devStatusRow}>
+              <Text style={[styles.devStatusLabel, { color: colors.textSecondary }]}>Current Plan:</Text>
+              <Text style={[styles.devStatusValue, { color: colors.textPrimary }]}>
+                {subState.plan === 'yearly'
+                  ? 'Yearly Pro Pass (₹950)'
+                  : subState.plan === 'monthly'
+                  ? 'Monthly Fisherman Pass (₹100)'
+                  : subState.plan === 'lifetime'
+                  ? 'Lifetime Skipper Pass (₹2,499)'
+                  : 'Complimentary Free Trial'}
+              </Text>
+            </View>
+
+            <View style={styles.devStatusRow}>
+              <Text style={[styles.devStatusLabel, { color: colors.textSecondary }]}>Plan Expiry Date:</Text>
+              <Text style={[styles.devStatusValue, { color: '#F59E0B', fontWeight: '800' }]}>
+                {subState.activePlanExpiry || 'N/A'}
+              </Text>
+            </View>
+
+            <View style={styles.devStatusRow}>
+              <Text style={[styles.devStatusLabel, { color: colors.textSecondary }]}>Days Remaining:</Text>
+              <Text
+                style={[
+                  styles.devStatusValue,
+                  { color: subState.isTrialExpired ? '#EF4444' : '#10B981', fontWeight: '800' },
+                ]}>
+                {subState.isSubscribed
+                  ? SubscriptionStore.getPlanDaysRemaining()
+                  : SubscriptionStore.getTrialDaysRemaining()}{' '}
+                Days
+              </Text>
+            </View>
+
+            {/* Visual Progress Bar */}
+            <View style={[styles.devProgressTrack, { backgroundColor: isNight ? '#1E293B' : '#E2E8F0' }]}>
+              <View
+                style={[
+                  styles.devProgressFill,
+                  {
+                    width: subState.isSubscribed ? '85%' : subState.isTrialExpired ? '100%' : '50%',
+                    backgroundColor: subState.isSubscribed
+                      ? '#10B981'
+                      : subState.isTrialExpired
+                      ? '#EF4444'
+                      : '#0284C7',
+                  },
+                ]}
+              />
+            </View>
+
+            {subState.lastTransaction && (
+              <View style={[styles.devTxBox, { backgroundColor: isNight ? '#0F1A30' : '#FFFFFF', borderColor: isNight ? '#1E2D4A' : '#E2E8F0' }]}>
+                <Text style={[styles.devTxTitle, { color: colors.textSecondary }]}>
+                  Last Simulated Transaction:
+                </Text>
+                <Text
+                  style={[
+                    styles.devTxDetail,
+                    {
+                      color:
+                        subState.lastTransaction.status === 'success' ? '#10B981' : '#EF4444',
+                    },
+                  ]}>
+                  {subState.lastTransaction.id} • {subState.lastTransaction.planTitle} • ₹
+                  {subState.lastTransaction.amount} (
+                  {subState.lastTransaction.status.toUpperCase()})
+                </Text>
+              </View>
+            )}
+          </View>
+
+          {/* Quick Simulation Buttons Grid */}
+          <Text style={[styles.devGridLabel, { color: colors.textPrimary }]}>
+            QUICK TEST SWITCHES:
+          </Text>
+
+          <View style={styles.devBtnGrid}>
+            <TouchableOpacity
+              activeOpacity={0.75}
+              onPress={() => {
+                SubscriptionStore.resetTrial();
+                triggerDevFeedback('Reset state: 7-Day Free Trial Active');
+                setPremiumModalVisible(true);
+              }}
+              style={[styles.devActionBtn, { backgroundColor: '#0284C7' }]}>
+              <Text style={styles.devActionBtnText}>🛡️ Set 7-Day Trial</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              activeOpacity={0.75}
+              onPress={() => {
+                SubscriptionStore.setTrialDaysForTesting(1);
+                triggerDevFeedback('Set trial to 1 day remaining');
+                setPremiumModalVisible(true);
+              }}
+              style={[styles.devActionBtn, { backgroundColor: '#D97706' }]}>
+              <Text style={styles.devActionBtnText}>⏳ Set 1-Day Trial</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              activeOpacity={0.75}
+              onPress={() => {
+                SubscriptionStore.expireTrialForTesting();
+                triggerDevFeedback('Trial expired! Hard paywall locked.');
+                setPremiumModalVisible(true);
+              }}
+              style={[styles.devActionBtn, { backgroundColor: '#DC2626' }]}>
+              <Text style={styles.devActionBtnText}>🔒 Trigger Trial Expired</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              activeOpacity={0.75}
+              onPress={() => {
+                SubscriptionStore.activateSubscription('yearly');
+                triggerDevFeedback('Activated Yearly Pro Pass (365 Days)');
+                setPremiumModalVisible(true);
+              }}
+              style={[styles.devActionBtn, { backgroundColor: '#10B981' }]}>
+              <Text style={styles.devActionBtnText}>👑 Set Yearly Pro</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              activeOpacity={0.75}
+              onPress={() => {
+                SubscriptionStore.activateSubscription('monthly');
+                triggerDevFeedback('Activated Monthly Pass (30 Days)');
+                setPremiumModalVisible(true);
+              }}
+              style={[styles.devActionBtn, { backgroundColor: '#6366F1' }]}>
+              <Text style={styles.devActionBtnText}>🐟 Set Monthly Pass</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              activeOpacity={0.75}
+              onPress={() => {
+                SubscriptionStore.activateSubscription('lifetime');
+                triggerDevFeedback('Activated Lifetime Skipper Pass');
+                setPremiumModalVisible(true);
+              }}
+              style={[styles.devActionBtn, { backgroundColor: '#059669' }]}>
+              <Text style={styles.devActionBtnText}>⚓ Set Lifetime Pass</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              activeOpacity={0.75}
+              onPress={() => {
+                SubscriptionStore.expirePlanForTesting();
+                triggerDevFeedback('Set Paid Plan as Expired');
+                setPremiumModalVisible(true);
+              }}
+              style={[styles.devActionBtn, { backgroundColor: '#7F1D1D' }]}>
+              <Text style={styles.devActionBtnText}>📅 Force Plan Expired</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              activeOpacity={0.75}
+              onPress={() => {
+                setPremiumModalVisible(true);
+              }}
+              style={[styles.devActionBtn, { backgroundColor: '#8B5CF6' }]}>
+              <Text style={styles.devActionBtnText}>💳 Launch Pro Modal</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* 7. About Section */}
         <View style={[styles.aboutCard, { backgroundColor: colors.cardBg, borderColor: colors.cardBorder }]}>
           <View style={styles.aboutHeaderRow}>
             <Text style={styles.aboutAnchorIcon}>⚓</Text>
@@ -744,7 +1036,7 @@ export default function SettingsScreen() {
         </TouchableWithoutFeedback>
       </Modal>
 
-      {/* Vessel Profile Modal */}
+      {/* Logged-In Captain Profile Modal */}
       <Modal
         visible={profileModalVisible}
         transparent={true}
@@ -754,57 +1046,139 @@ export default function SettingsScreen() {
           <View style={styles.modalOverlay}>
             <TouchableWithoutFeedback>
               <View style={[styles.modalCard, { backgroundColor: colors.cardBg }]}>
-                <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>Vessel Profile</Text>
-                <Text style={[styles.modalSubtitle, { color: colors.textSecondary }]}>
-                  Configure boat name and marine radio callsign:
-                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                    <Text style={{ fontSize: 28 }}>👨‍✈️</Text>
+                    <View>
+                      <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>Captain Profile</Text>
+                      <Text style={[styles.modalSubtitle, { color: colors.textSecondary }]}>
+                        Logged-in user account & license
+                      </Text>
+                    </View>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => setProfileModalVisible(false)}
+                    style={{ padding: 6, backgroundColor: colors.pillBg, borderRadius: 12 }}>
+                    <Text style={{ color: colors.textSecondary, fontWeight: '700' }}>✕</Text>
+                  </TouchableOpacity>
+                </View>
 
+                {/* Captain Name */}
                 <View style={styles.inputGroup}>
-                  <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Vessel Name</Text>
+                  <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Captain Full Name</Text>
                   <TextInput
-                    value={profileName}
-                    onChangeText={setProfileName}
-                    placeholder="e.g. Sagar Kripa #4"
+                    value={captainName}
+                    onChangeText={setCaptainName}
+                    placeholder="e.g. Captain Sagar"
                     placeholderTextColor={colors.textSecondary}
                     style={[styles.textInput, { backgroundColor: colors.pillBg, color: colors.textPrimary }]}
                   />
                 </View>
 
+                {/* Mobile Number (Read-only verified) */}
                 <View style={styles.inputGroup}>
-                  <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Marine VHF Callsign</Text>
-                  <TextInput
-                    value={profileCallsign}
-                    onChangeText={setProfileCallsign}
-                    placeholder="e.g. IND-GUJ-9921"
-                    placeholderTextColor={colors.textSecondary}
-                    style={[styles.textInput, { backgroundColor: colors.pillBg, color: colors.textPrimary }]}
-                  />
+                  <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Registered Mobile Number</Text>
+                  <View
+                    style={[
+                      styles.textInput,
+                      {
+                        backgroundColor: colors.pillBg,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                      },
+                    ]}>
+                    <Text style={{ color: colors.textPrimary, fontWeight: '700', fontSize: 14 }}>
+                      🇮🇳 +91 {authPhone}
+                    </Text>
+                    <View
+                      style={{
+                        backgroundColor: '#10B981',
+                        paddingHorizontal: 8,
+                        paddingVertical: 3,
+                        borderRadius: 6,
+                      }}>
+                      <Text style={{ color: '#FFFFFF', fontSize: 10, fontWeight: '800' }}>VERIFIED SMS</Text>
+                    </View>
+                  </View>
                 </View>
 
-                <View style={styles.inputGroup}>
-                  <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Home Port</Text>
-                  <TextInput
-                    value={profilePort}
-                    onChangeText={setProfilePort}
-                    placeholder="e.g. Diu / Veraval"
-                    placeholderTextColor={colors.textSecondary}
-                    style={[styles.textInput, { backgroundColor: colors.pillBg, color: colors.textPrimary }]}
-                  />
+                {/* Membership & License Card */}
+                <View
+                  style={{
+                    backgroundColor: colors.pillBg,
+                    padding: 12,
+                    borderRadius: 12,
+                    borderWidth: 1,
+                    borderColor: colors.cardBorder,
+                    gap: 6,
+                  }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={{ fontSize: 12, fontWeight: '800', color: colors.textPrimary }}>
+                      MEMBERSHIP STATUS
+                    </Text>
+                    <View
+                      style={{
+                        backgroundColor: subState.isSubscribed
+                          ? '#F59E0B'
+                          : subState.trialActive
+                            ? '#0284C7'
+                            : '#EF4444',
+                        paddingHorizontal: 8,
+                        paddingVertical: 2,
+                        borderRadius: 6,
+                      }}>
+                      <Text style={{ fontSize: 10, fontWeight: '800', color: '#FFFFFF' }}>
+                        {subState.isSubscribed
+                          ? 'PRO ACTIVATED'
+                          : subState.trialActive
+                            ? `${SubscriptionStore.getTrialDaysRemaining()} DAYS TRIAL`
+                            : 'TRIAL EXPIRED'}
+                      </Text>
+                    </View>
+                  </View>
+                  <Text style={{ fontSize: 11, color: colors.textSecondary }}>
+                    {subState.isSubscribed
+                      ? 'Full offline Arabian sea charts & bathymetry unlocked.'
+                      : subState.trialActive
+                        ? 'Complimentary navigation trial active. Upgrade anytime for lifetime offline access.'
+                        : 'Trial has expired. Activate a plan to re-enable charts & GPS tools.'}
+                  </Text>
+                  {!subState.isSubscribed && (
+                    <TouchableOpacity
+                      activeOpacity={0.8}
+                      onPress={() => {
+                        setProfileModalVisible(false);
+                        setPremiumModalVisible(true);
+                      }}
+                      style={{
+                        marginTop: 4,
+                        backgroundColor: '#F59E0B',
+                        paddingVertical: 8,
+                        borderRadius: 8,
+                        alignItems: 'center',
+                      }}>
+                      <Text style={{ color: '#0F172A', fontWeight: '800', fontSize: 12 }}>
+                        ⭐ UPGRADE TO PRO (UNLIMITED)
+                      </Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
 
+                {/* Buttons: Save & Sign Out */}
                 <View style={styles.modalBtnRow}>
                   <TouchableOpacity
                     activeOpacity={0.7}
-                    onPress={() => setProfileModalVisible(false)}
-                    style={[styles.modalHalfBtn, { backgroundColor: colors.pillBg }]}>
-                    <Text style={[styles.modalBtnText, { color: colors.textPrimary }]}>Cancel</Text>
+                    onPress={handleSignOut}
+                    style={[styles.modalHalfBtn, { backgroundColor: '#EF4444' }]}>
+                    <Text style={[styles.modalBtnText, { color: '#FFFFFF' }]}>🚪 Sign Out</Text>
                   </TouchableOpacity>
 
                   <TouchableOpacity
                     activeOpacity={0.7}
-                    onPress={handleSaveProfile}
+                    onPress={handleSaveCaptainProfile}
                     style={[styles.modalHalfBtn, { backgroundColor: colors.accentBlue }]}>
-                    <Text style={[styles.modalBtnText, { color: '#FFFFFF' }]}>Save</Text>
+                    <Text style={[styles.modalBtnText, { color: '#FFFFFF' }]}>Save Profile</Text>
                   </TouchableOpacity>
                 </View>
               </View>
@@ -812,6 +1186,13 @@ export default function SettingsScreen() {
           </View>
         </TouchableWithoutFeedback>
       </Modal>
+
+      {/* Upgrade to Pro Modal */}
+      <PremiumUpgradeModal
+        visible={premiumModalVisible}
+        onClose={() => setPremiumModalVisible(false)}
+        nightMode={isNight}
+      />
     </SafeAreaView>
   );
 }
@@ -1156,5 +1537,128 @@ const styles = StyleSheet.create({
   modalBtnText: {
     fontSize: 14,
     fontWeight: '800',
+  },
+
+  // Developer Testing Lab Styles
+  devLabCard: {
+    padding: 16,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    marginBottom: 16,
+  },
+  devLabHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 12,
+  },
+  devLabEmoji: {
+    fontSize: 26,
+  },
+  devLabTitle: {
+    fontSize: 15,
+    fontWeight: '900',
+    letterSpacing: 0.2,
+  },
+  devLabSubtitle: {
+    fontSize: 11.5,
+    marginTop: 2,
+    lineHeight: 16,
+  },
+  devToast: {
+    backgroundColor: '#064E3B',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    marginBottom: 12,
+    borderLeftWidth: 3,
+    borderLeftColor: '#34D399',
+  },
+  devToastText: {
+    color: '#34D399',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  devStatusBox: {
+    padding: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    gap: 8,
+    marginBottom: 14,
+  },
+  devStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  devStatusLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  devStatusPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  devStatusPillText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.4,
+  },
+  devStatusValue: {
+    fontSize: 12.5,
+    fontWeight: '700',
+  },
+  devProgressTrack: {
+    height: 6,
+    borderRadius: 3,
+    overflow: 'hidden',
+    marginTop: 2,
+  },
+  devProgressFill: {
+    height: '100%',
+    borderRadius: 3,
+  },
+  devTxBox: {
+    padding: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    marginTop: 4,
+    gap: 2,
+  },
+  devTxTitle: {
+    fontSize: 10.5,
+    fontWeight: '700',
+  },
+  devTxDetail: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  devGridLabel: {
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 0.8,
+    marginBottom: 8,
+  },
+  devBtnGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  devActionBtn: {
+    flexBasis: '48%',
+    flexGrow: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  devActionBtnText: {
+    color: '#FFFFFF',
+    fontSize: 11.5,
+    fontWeight: '800',
+    textAlign: 'center',
   },
 });

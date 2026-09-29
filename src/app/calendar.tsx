@@ -1,7 +1,17 @@
-import { Image } from 'expo-image';
+import { DynamicMoonView } from '@/components/marine/DynamicMoonView';
+import { BackButton } from '@/components/ui/back-button';
+import { SettingsStore, SpeechLanguage } from '@/services/settingsStore';
+import { VoiceService } from '@/services/voiceService';
+import {
+  getLocalizedTithiName,
+  getMoonPhaseDetails,
+  getSunTimingDetails,
+  MoonPhaseInfo,
+  SunTimingInfo,
+} from '@/utils/astronomy';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Dimensions,
   Modal,
@@ -13,17 +23,6 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { BackButton } from '@/components/ui/back-button';
-import { SettingsStore, SpeechLanguage } from '@/services/settingsStore';
-import { VoiceService } from '@/services/voiceService';
-import { DynamicMoonView } from '@/components/marine/DynamicMoonView';
-import {
-  getMoonPhaseDetails,
-  getSunTimingDetails,
-  getLocalizedTithiName,
-  MoonPhaseInfo,
-  SunTimingInfo,
-} from '@/utils/astronomy';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -753,29 +752,29 @@ export default function CalendarScreen() {
       language === 'Gujarati'
         ? selectedPort.nameGu
         : language === 'Hindi'
-        ? selectedPort.nameHi
-        : selectedPort.name;
+          ? selectedPort.nameHi
+          : selectedPort.name;
 
     const phaseText =
       language === 'Gujarati'
         ? astroMoon.phaseNameGu
         : language === 'Hindi'
-        ? astroMoon.phaseNameHi
-        : astroMoon.phaseNameEn;
+          ? astroMoon.phaseNameHi
+          : astroMoon.phaseNameEn;
 
     const tideText =
       language === 'Gujarati'
         ? astroMoon.tideTitleGu
         : language === 'Hindi'
-        ? astroMoon.tideTitleHi
-        : astroMoon.tideTitleEn;
+          ? astroMoon.tideTitleHi
+          : astroMoon.tideTitleEn;
 
     const msg =
       language === 'Gujarati'
         ? `${portNameText}, ચંદ્ર તેજસ્વીતા: ${astroMoon.illumination} ટકા, ${phaseText}, ભરતી: ${tideText}, ચંદ્રનું અંતર: ${astroMoon.distanceKm} કિલોમીટર`
         : language === 'Hindi'
-        ? `${portNameText}, चाँद की रोशनी: ${astroMoon.illumination} प्रतिशत, ${phaseText}, ज्वार: ${tideText}, चाँद की दूरी: ${astroMoon.distanceKm} किलोमीटर`
-        : `${portNameText}, Moon Illumination: ${astroMoon.illumination} percent, ${phaseText}, Tide: ${tideText}, Distance: ${astroMoon.distanceKm} kilometers`;
+          ? `${portNameText}, चाँद की रोशनी: ${astroMoon.illumination} प्रतिशत, ${phaseText}, ज्वार: ${tideText}, चाँद की दूरी: ${astroMoon.distanceKm} किलोमीटर`
+          : `${portNameText}, Moon Illumination: ${astroMoon.illumination} percent, ${phaseText}, Tide: ${tideText}, Distance: ${astroMoon.distanceKm} kilometers`;
 
     VoiceService.speak(msg, language);
   };
@@ -793,8 +792,8 @@ export default function CalendarScreen() {
         language === 'Gujarati'
           ? `${portName} પસંદ કર્યો. સૂર્ય અને ચંદ્ર સમય ગોઠવાઈ ગયો.`
           : language === 'Hindi'
-          ? `${portName} चुना गया। चाँद और सूरज का समय अपडेट हुआ।`
-          : `${port.name} selected. Data synchronized.`;
+            ? `${portName} चुना गया। चाँद और सूरज का समय अपडेट हुआ।`
+            : `${port.name} selected. Data synchronized.`;
 
       VoiceService.speak(msg, language);
     }
@@ -827,37 +826,37 @@ export default function CalendarScreen() {
   // Theme Colors
   const colors = isNight
     ? {
-        bg: '#0A0E17',
-        cardBg: '#121A28',
-        cardBorder: '#1E293B',
-        headerBg: '#121A28',
-        headerBorder: '#1E293B',
-        textPrimary: '#F1F5F9',
-        textSecondary: '#94A3B8',
-        accentCyan: '#00E5FF',
-        accentBlue: '#0288D1',
-        pillBg: '#1E293B',
-        tideJuvar: '#00E676',
-        tideBhanj: '#FFB300',
-        liveVoiceBg: 'rgba(2, 136, 209, 0.18)',
-        liveVoiceBorder: '#0288D1',
-      }
+      bg: '#0A0E17',
+      cardBg: '#121A28',
+      cardBorder: '#1E293B',
+      headerBg: '#121A28',
+      headerBorder: '#1E293B',
+      textPrimary: '#F1F5F9',
+      textSecondary: '#94A3B8',
+      accentCyan: '#00E5FF',
+      accentBlue: '#0288D1',
+      pillBg: '#1E293B',
+      tideJuvar: '#00E676',
+      tideBhanj: '#FFB300',
+      liveVoiceBg: 'rgba(2, 136, 209, 0.18)',
+      liveVoiceBorder: '#0288D1',
+    }
     : {
-        bg: '#F8FAFC',
-        cardBg: '#FFFFFF',
-        cardBorder: '#E2E8F0',
-        headerBg: '#FFFFFF',
-        headerBorder: '#E2E8F0',
-        textPrimary: '#0F172A',
-        textSecondary: '#64748B',
-        accentCyan: '#00838F',
-        accentBlue: '#0288D1',
-        pillBg: '#F1F5F9',
-        tideJuvar: '#00C853',
-        tideBhanj: '#F57C00',
-        liveVoiceBg: 'rgba(2, 136, 209, 0.12)',
-        liveVoiceBorder: '#0288D1',
-      };
+      bg: '#F8FAFC',
+      cardBg: '#FFFFFF',
+      cardBorder: '#E2E8F0',
+      headerBg: '#FFFFFF',
+      headerBorder: '#E2E8F0',
+      textPrimary: '#0F172A',
+      textSecondary: '#64748B',
+      accentCyan: '#00838F',
+      accentBlue: '#0288D1',
+      pillBg: '#F1F5F9',
+      tideJuvar: '#00C853',
+      tideBhanj: '#F57C00',
+      liveVoiceBg: 'rgba(2, 136, 209, 0.12)',
+      liveVoiceBorder: '#0288D1',
+    };
 
   return (
     <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={[styles.container, { backgroundColor: colors.bg }]}>
@@ -1050,8 +1049,8 @@ export default function CalendarScreen() {
                 {language === 'Gujarati'
                   ? astroMoon.phaseNameGu
                   : language === 'Hindi'
-                  ? astroMoon.phaseNameHi
-                  : astroMoon.phaseNameEn}
+                    ? astroMoon.phaseNameHi
+                    : astroMoon.phaseNameEn}
               </Text>
             </View>
 
@@ -1064,14 +1063,14 @@ export default function CalendarScreen() {
                     astroMoon.tideType === 'spring'
                       ? 'rgba(16, 185, 129, 0.15)'
                       : astroMoon.tideType === 'neap'
-                      ? 'rgba(245, 158, 11, 0.15)'
-                      : 'rgba(59, 130, 246, 0.15)',
+                        ? 'rgba(245, 158, 11, 0.15)'
+                        : 'rgba(59, 130, 246, 0.15)',
                   borderColor:
                     astroMoon.tideType === 'spring'
                       ? '#10B981'
                       : astroMoon.tideType === 'neap'
-                      ? '#F59E0B'
-                      : '#3B82F6',
+                        ? '#F59E0B'
+                        : '#3B82F6',
                 },
               ]}>
               <Text
@@ -1082,8 +1081,8 @@ export default function CalendarScreen() {
                       astroMoon.tideType === 'spring'
                         ? '#10B981'
                         : astroMoon.tideType === 'neap'
-                        ? '#F59E0B'
-                        : '#3B82F6',
+                          ? '#F59E0B'
+                          : '#3B82F6',
                   },
                 ]}>
                 {astroMoon.tideType === 'spring' ? 'Juvar (Spring)' : astroMoon.tideType === 'neap' ? 'Bhanj (Neap)' : 'Moderate'}
@@ -1111,8 +1110,8 @@ export default function CalendarScreen() {
                 {language === 'Gujarati'
                   ? astroMoon.phaseNameGu.toUpperCase()
                   : language === 'Hindi'
-                  ? astroMoon.phaseNameHi.toUpperCase()
-                  : astroMoon.phaseNameEn.toUpperCase()}{' '}
+                    ? astroMoon.phaseNameHi.toUpperCase()
+                    : astroMoon.phaseNameEn.toUpperCase()}{' '}
                 •{' '}
                 <Text style={{ color: colors.accentCyan, fontWeight: '900' }}>
                   {astroMoon.illumination}% ILLUMINATED
@@ -1153,14 +1152,14 @@ export default function CalendarScreen() {
                     astroMoon.tideType === 'spring'
                       ? 'rgba(16, 185, 129, 0.12)'
                       : astroMoon.tideType === 'neap'
-                      ? 'rgba(245, 158, 11, 0.12)'
-                      : 'rgba(59, 130, 246, 0.12)',
+                        ? 'rgba(245, 158, 11, 0.12)'
+                        : 'rgba(59, 130, 246, 0.12)',
                   borderColor:
                     astroMoon.tideType === 'spring'
                       ? '#10B981'
                       : astroMoon.tideType === 'neap'
-                      ? '#F59E0B'
-                      : '#3B82F6',
+                        ? '#F59E0B'
+                        : '#3B82F6',
                 },
               ]}>
               <Text
@@ -1171,8 +1170,8 @@ export default function CalendarScreen() {
                       astroMoon.tideType === 'spring'
                         ? '#10B981'
                         : astroMoon.tideType === 'neap'
-                        ? '#F59E0B'
-                        : '#3B82F6',
+                          ? '#F59E0B'
+                          : '#3B82F6',
                   },
                 ]}>
                 ⚡ {astroMoon.tideTitleEn}
@@ -1456,8 +1455,8 @@ export default function CalendarScreen() {
                         l === 'Gujarati'
                           ? 'ગુજરાતી અવાજ સક્રિય કર્યો'
                           : l === 'Hindi'
-                          ? 'हिंदी आवाज़ सक्रिय की गई'
-                          : 'English voice activated',
+                            ? 'हिंदी आवाज़ सक्रिय की गई'
+                            : 'English voice activated',
                         l
                       );
                     }}
@@ -1473,8 +1472,8 @@ export default function CalendarScreen() {
                       {l === 'Gujarati'
                         ? 'ગુજરાતી (Gujarati)'
                         : l === 'Hindi'
-                        ? 'हिंदी (Hindi)'
-                        : 'English'}
+                          ? 'हिंदी (Hindi)'
+                          : 'English'}
                     </Text>
                     {language === l && (
                       <Text style={[styles.langCheckmark, { color: colors.accentBlue }]}>✓</Text>

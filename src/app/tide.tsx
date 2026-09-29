@@ -1,8 +1,16 @@
+import { BackButton } from '@/components/ui/back-button';
+import {
+  getCalculatedTideEventsForDate,
+  MARINE_PORTS_DATABASE,
+  MarinePortInfo,
+} from '@/services/marineData';
+import { SettingsStore } from '@/services/settingsStore';
+import { VoiceService } from '@/services/voiceService';
+import { getMoonPhaseDetails, getSunTimingDetails } from '@/utils/astronomy';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
-  Alert,
   Dimensions,
   Modal,
   Platform,
@@ -12,7 +20,7 @@ import {
   TouchableOpacity,
   TouchableWithoutFeedback,
   useWindowDimensions,
-  View,
+  View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, {
@@ -26,15 +34,6 @@ import Svg, {
   Stop,
   Text as SvgText,
 } from 'react-native-svg';
-import { BackButton } from '@/components/ui/back-button';
-import { SettingsStore } from '@/services/settingsStore';
-import {
-  MARINE_PORTS_DATABASE,
-  MarinePortInfo,
-  getCalculatedTideEventsForDate,
-} from '@/services/marineData';
-import { getMoonPhaseDetails, getSunTimingDetails } from '@/utils/astronomy';
-import { VoiceService } from '@/services/voiceService';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -470,29 +469,29 @@ export default function TideScreen() {
 
   const colors = isNight
     ? {
-        bg: '#0A0F1D',
-        cardBg: '#111827',
-        cardBorder: '#1F2937',
-        headerBg: '#0F172A',
-        headerBorder: '#1E293B',
-        textPrimary: '#F8FAFC',
-        textSecondary: '#94A3B8',
-        accentCyan: '#00E5FF',
-        accentBlue: '#0288D1',
-        pillBg: '#1E293B',
-      }
+      bg: '#0A0F1D',
+      cardBg: '#111827',
+      cardBorder: '#1F2937',
+      headerBg: '#0F172A',
+      headerBorder: '#1E293B',
+      textPrimary: '#F8FAFC',
+      textSecondary: '#94A3B8',
+      accentCyan: '#00E5FF',
+      accentBlue: '#0288D1',
+      pillBg: '#1E293B',
+    }
     : {
-        bg: '#F8FAFC',
-        cardBg: '#FFFFFF',
-        cardBorder: '#E2E8F0',
-        headerBg: '#FFFFFF',
-        headerBorder: '#E2E8F0',
-        textPrimary: '#0F172A',
-        textSecondary: '#64748B',
-        accentCyan: '#00838F',
-        accentBlue: '#0288D1',
-        pillBg: '#F1F5F9',
-      };
+      bg: '#F8FAFC',
+      cardBg: '#FFFFFF',
+      cardBorder: '#E2E8F0',
+      headerBg: '#FFFFFF',
+      headerBorder: '#E2E8F0',
+      textPrimary: '#0F172A',
+      textSecondary: '#64748B',
+      accentCyan: '#00838F',
+      accentBlue: '#0288D1',
+      pillBg: '#F1F5F9',
+    };
 
   return (
     <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={[styles.container, { backgroundColor: colors.bg }]}>
@@ -558,8 +557,8 @@ export default function TideScreen() {
                 {selectedLang === 'Gujarati'
                   ? `${port.nameGu} (${port.name})`
                   : selectedLang === 'Hindi'
-                  ? `${port.nameHi || port.name} (${port.name})`
-                  : port.name}
+                    ? `${port.nameHi || port.name} (${port.name})`
+                    : port.name}
               </Text>
             </View>
           </View>
@@ -738,19 +737,19 @@ export default function TideScreen() {
             }}
             {...(Platform.OS === 'web'
               ? {
-                  onPointerDown: (e: any) => {
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    setIsDragging(true);
-                    handleChartTouch(e.clientX - rect.left);
-                  },
-                  onPointerMove: (e: any) => {
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    handleChartTouch(e.clientX - rect.left);
-                  },
-                  onPointerUp: () => {
-                    setIsDragging(false);
-                  },
-                }
+                onPointerDown: (e: any) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setIsDragging(true);
+                  handleChartTouch(e.clientX - rect.left);
+                },
+                onPointerMove: (e: any) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  handleChartTouch(e.clientX - rect.left);
+                },
+                onPointerUp: () => {
+                  setIsDragging(false);
+                },
+              }
               : {})}>
             <Svg width="100%" height={CHART_HEIGHT}>
               <Defs>
@@ -1061,8 +1060,8 @@ export default function TideScreen() {
                   selectedLang === 'Gujarati'
                     ? `${item.nameGu} (${item.name})`
                     : selectedLang === 'Hindi'
-                    ? `${item.nameHi || item.name} (${item.name})`
-                    : item.name;
+                      ? `${item.nameHi || item.name} (${item.name})`
+                      : item.name;
 
                 return (
                   <TouchableOpacity

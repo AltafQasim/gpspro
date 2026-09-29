@@ -1,10 +1,13 @@
+import { PremiumUpgradeModal } from '@/components/marine/PremiumUpgradeModal';
+import { BackButton } from '@/components/ui/back-button';
+import { SettingsStore } from '@/services/settingsStore';
+import { SubscriptionStore, SubscriptionState } from '@/services/subscriptionStore';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Alert,
   Linking,
-  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -12,76 +15,81 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { BackButton } from '@/components/ui/back-button';
 
 export default function PremiumScreen() {
   const router = useRouter();
 
+  const [nightMode, setNightMode] = useState<boolean>(SettingsStore.isNightMode());
+  const [subState, setSubState] = useState<SubscriptionState>(() => SubscriptionStore.getState());
+  const [modalVisible, setModalVisible] = useState<boolean>(false);
+
+  useEffect(() => {
+    const unsub = SettingsStore.subscribe(() => {
+      setNightMode(SettingsStore.isNightMode());
+    });
+    const unsubSub = SubscriptionStore.subscribe((state) => {
+      setSubState(state);
+    });
+    return () => {
+      unsub();
+      unsubSub();
+    };
+  }, []);
+
   // State
-  const [userId, setUserId] = useState<string>('LhNpbFD3LHTEPRKoNKINhilgcZB2');
-  const todayDate = '2026-09-25';
-  const activePlanExpiry = '2028-08-15';
+  const [userId] = useState<string>('LhNpbFD3LHTEPRKoNKINhilgcZB2');
+  const todayDate = new Date().toISOString().split('T')[0];
+  const activePlanExpiry = subState.activePlanExpiry || 'N/A';
+  const daysRemaining = subState.isSubscribed
+    ? SubscriptionStore.getPlanDaysRemaining()
+    : SubscriptionStore.getTrialDaysRemaining();
 
   const handleCopyUserId = () => {
     Alert.alert('Copied to Clipboard 📋', `User ID: ${userId}`);
   };
 
   const handleSyncPlan = () => {
-    Alert.alert('Plan Synchronized 🔄', 'Subscription verified with Google Play & Marine Server. Yearly Plan active.');
+    Alert.alert(
+      'Plan Synchronized 🔄',
+      `Current Status: ${
+        subState.isSubscribed
+          ? 'Active Pro Plan'
+          : subState.trialActive
+          ? 'Free Trial Active'
+          : 'Trial Expired'
+      }\nValid Till: ${activePlanExpiry}`
+    );
   };
 
   const handleCallSupport = () => {
-    Alert.alert('Call Marine Support 📞', 'Dialing Fishing RAHI Marine Support Helpline: +91 98765 43210', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Call Now', onPress: () => Linking.openURL('tel:+919876543210').catch(() => {}) },
-    ]);
+    Linking.openURL('tel:+919876543210').catch(() => {
+      Alert.alert('Support Helpline', 'Contact Fishing RAHI Marine Support: +91 98765 43210');
+    });
   };
 
   const handleWhatsAppSupport = () => {
-    Alert.alert('WhatsApp Marine Support 💬', 'Connecting to Official WhatsApp Support for Instant Recharge Assistance.', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Open WhatsApp', onPress: () => Linking.openURL('https://wa.me/919876543210').catch(() => {}) },
-    ]);
+    Linking.openURL('https://wa.me/919876543210?text=Hi%20GPS%20Pro%20Support,%20I%20need%20assistance%20with%20Marine%20Plan%20Recharge').catch(() => {
+      Alert.alert('Support Helpline', 'Contact Fishing RAHI Marine Support: +91 98765 43210');
+    });
   };
 
   const handleSendSms = () => {
-    Alert.alert('Send Support SMS ✉️', 'Sending User ID and device diagnostics to Support Server.', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Send SMS', onPress: () => Linking.openURL(`sms:+919876543210?body=User%20ID:%20${userId}`).catch(() => {}) },
-    ]);
+    Linking.openURL(`sms:+919876543210?body=User%20ID:%20${userId}`).catch(() => {});
   };
 
-  const handleRechargeStarter = () => {
-    Alert.alert(
-      'Recharge Fisherman Plan ⚡',
-      'Amount: ₹100 for 30 Days Access\nIncludes: Offline Maps, Unlimited Waypoints, Tide Charts.\nProceed to UPI / Netbanking?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Pay ₹100 via UPI', onPress: () => Alert.alert('Payment Successful ✅', '30-Day Fisherman Access Activated!') },
-      ]
-    );
-  };
-
-  const handleSubscribeYearly = () => {
-    Alert.alert(
-      'Subscribe to Yearly Plan ⭐',
-      'Amount: ₹950 / year (Best Value • Save 60%)\nAuto-renewable. Cancel anytime from Google Play.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Subscribe via Google Play', onPress: () => Alert.alert('Subscription Active ✅', 'Yearly Plan activated till 2028!') },
-      ]
-    );
+  const handleOpenUpgradeModal = () => {
+    setModalVisible(true);
   };
 
   return (
-    <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={styles.container}>
-      <StatusBar style="dark" animated={true} />
+    <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={[styles.container, { backgroundColor: nightMode ? '#070D1E' : '#F8FAFC' }]}>
+      <StatusBar style={nightMode ? 'light' : 'dark'} animated={true} />
 
       {/* Screen Header */}
       <View style={styles.topNavRow}>
         <BackButton showLabel={true} label="Home" />
 
-        <Text style={styles.headerTitle}>Upgrade to Premium</Text>
+        <Text style={[styles.headerTitle, { color: nightMode ? '#F8FAFC' : '#0F172A' }]}>Upgrade to Premium</Text>
 
         <View style={{ width: 44 }} />
       </View>
@@ -92,7 +100,17 @@ export default function PremiumScreen() {
         {/* Active Plan Status Banner (Matching Screenshot) */}
         <View style={styles.activeBanner}>
           <Text style={styles.activeBannerText}>
-            ✅ Yearly Plan Active till {activePlanExpiry}
+            {subState.isSubscribed
+              ? `✅ ${
+                  subState.plan === 'yearly'
+                    ? 'Yearly Pro Pass'
+                    : subState.plan === 'lifetime'
+                    ? 'Lifetime Skipper Pass'
+                    : 'Monthly Fisherman Pass'
+                } Active till ${activePlanExpiry} (${daysRemaining} Days Left)`
+              : subState.trialActive && !subState.isTrialExpired
+              ? `🛡️ 7-Day Free Trial Active (${daysRemaining} Days Left)`
+              : '⚠️ Free Trial Expired • Recharge to Activate'}
           </Text>
         </View>
 
@@ -163,7 +181,7 @@ export default function PremiumScreen() {
 
             <TouchableOpacity
               activeOpacity={0.85}
-              onPress={handleRechargeStarter}
+              onPress={handleOpenUpgradeModal}
               style={styles.rechargeBtn}>
               <Text style={styles.rechargeBtnText}>Recharge</Text>
             </TouchableOpacity>
@@ -188,7 +206,7 @@ export default function PremiumScreen() {
 
             <TouchableOpacity
               activeOpacity={0.85}
-              onPress={handleSubscribeYearly}
+              onPress={handleOpenUpgradeModal}
               style={styles.subscribeBtn}>
               <Text style={styles.subscribeBtnText}>Subscribe</Text>
             </TouchableOpacity>
@@ -209,13 +227,20 @@ export default function PremiumScreen() {
 
             <TouchableOpacity
               activeOpacity={0.85}
-              onPress={() => Alert.alert('Subscribed', 'Monthly plan activated.')}
+              onPress={handleOpenUpgradeModal}
               style={[styles.subscribeBtn, { backgroundColor: '#00838F' }]}>
               <Text style={styles.subscribeBtnText}>Subscribe</Text>
             </TouchableOpacity>
           </View>
         </View>
       </ScrollView>
+
+      {/* Full Screen Premium Modal with simulated checkout, success & fail */}
+      <PremiumUpgradeModal
+        visible={modalVisible}
+        onClose={() => setModalVisible(false)}
+        nightMode={nightMode}
+      />
     </SafeAreaView>
   );
 }
