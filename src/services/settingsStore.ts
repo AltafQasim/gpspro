@@ -22,6 +22,7 @@ export interface AppSettings {
   posDatum: PositionDatum;
   keepScreenOn: boolean;
   profile: VesselProfile;
+  selectedPortId?: string;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -32,6 +33,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   posFormat: 'DMF',
   posDatum: 'WGS84',
   keepScreenOn: true,
+  selectedPortId: 'navabandar',
   profile: {
     name: 'Sagar Kripa #4',
     callsign: 'IND-GUJ-9921',
@@ -90,6 +92,14 @@ export class SettingsStore {
     // System theme: check hour for marine twilight (after 7 PM or before 6 AM)
     const hour = new Date().getHours();
     return hour >= 19 || hour < 6;
+  }
+
+  static getSelectedPortId(): string {
+    return currentSettings.selectedPortId || 'navabandar';
+  }
+
+  static setSelectedPortId(portId: string) {
+    this.updateSettings({ selectedPortId: portId });
   }
 
   static updateSettings(partial: Partial<AppSettings>) {

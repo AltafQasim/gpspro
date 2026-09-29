@@ -970,7 +970,7 @@ export default function MarineMapScreen() {
         {weatherOverlay && (
           <View style={styles.weatherBannerBox} pointerEvents="none">
             <Text style={styles.weatherBannerText}>
-              🌦️ Swell: 1.1 m • Wind: 11 kn NW • Baro: 1013 hPa (Arabian Sea Safe)
+              🌦️ Swell: 1.1 m • Wind: 20 km/h NW (11 kn) • Baro: 1013 hPa (Arabian Sea Safe)
             </Text>
           </View>
         )}

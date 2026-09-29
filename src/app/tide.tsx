@@ -17,11 +17,13 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   TouchableWithoutFeedback,
   useWindowDimensions,
   View
 } from 'react-native';
+import { GpsService, calculateDistanceKm } from '@/services/gpsService';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, {
   Circle,
@@ -200,25 +202,24 @@ function getTideHeightAtHour(
   const last = parsed[parsed.length - 1];
   const secondLast = parsed[parsed.length - 2] || { hour: last.hour - 6.2, height: last.height > 1.5 ? 0.7 : 2.0, type: 'low' };
 
-  const prevCycleDelta = Math.max(4.5, second.hour - first.hour);
-  const nextCycleDelta = Math.max(4.5, last.hour - secondLast.hour);
+  const wrapCycleDelta = Math.max(5.5, 24 - last.hour + first.hour);
 
   const virtualBefore: TideEventPoint = {
-    hour: first.hour - prevCycleDelta,
-    height: second.height,
-    type: second.type,
+    hour: first.hour - wrapCycleDelta,
+    height: last.type !== first.type ? last.height : second.height,
+    type: first.type === 'high' ? 'low' : 'high',
   };
 
   const virtualAfter: TideEventPoint = {
-    hour: last.hour + nextCycleDelta,
-    height: secondLast.height,
-    type: secondLast.type,
+    hour: last.hour + wrapCycleDelta,
+    height: first.type !== last.type ? first.height : secondLast.height,
+    type: last.type === 'high' ? 'low' : 'high',
   };
 
   const virtualAfter2: TideEventPoint = {
-    hour: virtualAfter.hour + prevCycleDelta,
-    height: last.height,
-    type: last.type,
+    hour: virtualAfter.hour + Math.max(5.5, second.hour - first.hour),
+    height: second.height,
+    type: second.type,
   };
 
   const timeline = [virtualBefore, ...parsed, virtualAfter, virtualAfter2];
@@ -251,41 +252,99 @@ function getTideHeightAtHour(
 const CHART_HEIGHT = 200;
 const PADDING_TOP = 26;
 const PADDING_BOTTOM = 26;
-const MAX_SCALE = 3.5;
 const MIN_SCALE = 0.0;
 
-function heightToY(h: number, chartH: number): number {
+function heightToY(h: number, chartH: number = 200, maxScale: number = 3.5): number {
   const usable = chartH - PADDING_TOP - PADDING_BOTTOM;
-  const clamped = Math.max(MIN_SCALE, Math.min(MAX_SCALE, h));
-  return PADDING_TOP + (1 - (clamped - MIN_SCALE) / (MAX_SCALE - MIN_SCALE)) * usable;
+  const clamped = Math.max(MIN_SCALE, Math.min(maxScale, h));
+  return PADDING_TOP + (1 - (clamped - MIN_SCALE) / (maxScale - MIN_SCALE)) * usable;
 }
+
+const getTodayDateStr = () => {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
 
 export default function TideScreen() {
   const router = useRouter();
 
   // App Theme & Night Mode Subscription
   const [isNight, setIsNight] = useState<boolean>(() => SettingsStore.isNightMode());
+  const [selectedPortId, setSelectedPortId] = useState<string>(() => SettingsStore.getSelectedPortId());
+
   useEffect(() => {
-    const unsub = SettingsStore.subscribe(() => {
+    const unsub = SettingsStore.subscribe((s) => {
       setIsNight(SettingsStore.isNightMode());
+      if (s.selectedPortId && s.selectedPortId !== selectedPortId) {
+        setSelectedPortId(s.selectedPortId);
+      }
     });
     return unsub;
-  }, []);
+  }, [selectedPortId]);
 
-  // State: Default language is Gujarati
-  const [selectedPortId, setSelectedPortId] = useState<string>('veraval');
+  // State: Default language is Gujarati, Default date is today's real local date
   const [selectedLang, setSelectedLang] = useState<'Gujarati' | 'Hindi' | 'English'>('Gujarati');
-  const [selectedDate, setSelectedDate] = useState<string>('2026-09-25');
+  const [selectedDate, setSelectedDate] = useState<string>(getTodayDateStr);
   const [showPortModal, setShowPortModal] = useState<boolean>(false);
   const [showLangModal, setShowLangModal] = useState<boolean>(false);
   const [showSunMoonModal, setShowSunMoonModal] = useState<boolean>(false);
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
   const [activeEventIdx, setActiveEventIdx] = useState<number | null>(null);
 
-  // Dynamic Responsive Dimensions
+  // Live GPS Coordinates for computing real-time distance (km) to all ports
+  const [currentGps, setCurrentGps] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [portSearchText, setPortSearchText] = useState<string>('');
+
+  useEffect(() => {
+    const cached = GpsService.getLastTelemetry();
+    if (cached) {
+      setCurrentGps({ latitude: cached.latitude, longitude: cached.longitude });
+    }
+    GpsService.getCurrentLocationAsync().then((loc) => {
+      if (loc) {
+        setCurrentGps({ latitude: loc.latitude, longitude: loc.longitude });
+      }
+    });
+  }, []);
+
+  // Filtered & Distance-Sorted Ports List for the Modal Dropdown
+  const filteredAndSortedPorts = useMemo(() => {
+    const query = portSearchText.trim().toLowerCase();
+    const list = MARINE_PORTS_DATABASE.map((p) => {
+      const distanceKm = currentGps
+        ? calculateDistanceKm(currentGps.latitude, currentGps.longitude, p.lat, p.lon)
+        : null;
+      return { ...p, distanceKm };
+    });
+
+    const filtered = query
+      ? list.filter(
+          (p) =>
+            p.name.toLowerCase().includes(query) ||
+            p.nameGu.toLowerCase().includes(query) ||
+            (p.nameHi && p.nameHi.toLowerCase().includes(query)) ||
+            p.region.toLowerCase().includes(query) ||
+            p.regionGu.toLowerCase().includes(query) ||
+            p.id.toLowerCase().includes(query)
+        )
+      : list;
+
+    if (currentGps) {
+      return [...filtered].sort((a, b) => (a.distanceKm ?? 99999) - (b.distanceKm ?? 99999));
+    }
+    return filtered;
+  }, [portSearchText, currentGps]);
+
+  // Dynamic Responsive Dimensions for All Devices (Small phones, Foldables, Tablets, Web)
   const { width: windowWidth } = useWindowDimensions();
-  const responsivePadding = windowWidth < 360 ? 10 : windowWidth < 480 ? 14 : 16;
-  const fallbackChartWidth = Math.max(260, Math.min(windowWidth - (responsivePadding * 2) - 32, 680));
+  const isSmallDevice = windowWidth < 360;
+  const isTablet = windowWidth >= 768;
+  const responsivePadding = isSmallDevice ? 10 : windowWidth < 480 ? 12 : 16;
+  const chartHeight = isSmallDevice ? 180 : isTablet ? 230 : 200;
+  const fallbackChartWidth = Math.max(260, Math.min(windowWidth - (responsivePadding * 2) - (isSmallDevice ? 20 : 32), 680));
 
   // Responsive Chart Width & Scrubbing
   const [chartWidth, setChartWidth] = useState<number>(fallbackChartWidth);
@@ -308,12 +367,22 @@ export default function TideScreen() {
 
   // Accurate Astronomical Solar and Lunar Data for Port & Date
   const astroDate = useMemo(() => new Date(`${selectedDate}T12:00:00Z`), [selectedDate]);
-  const moonInfo = useMemo(() => getMoonPhaseDetails(astroDate), [astroDate]);
-  const sunInfo = useMemo(() => getSunTimingDetails(astroDate), [astroDate]);
+  const moonInfo = useMemo(
+    () => getMoonPhaseDetails(astroDate, port.lat, port.lon),
+    [astroDate, port.lat, port.lon]
+  );
+  const sunInfo = useMemo(
+    () => getSunTimingDetails(astroDate, port.lat, port.lon),
+    [astroDate, port.lat, port.lon]
+  );
 
-  // Current real-time clock decimal hour (e.g. 20:30 -> 20.5)
-  const now = new Date();
-  const currentLiveHour = now.getHours() + now.getMinutes() / 60;
+  // Current real-time clock decimal hour (updates automatically every 20s)
+  const [liveClock, setLiveClock] = useState<Date>(new Date());
+  useEffect(() => {
+    const timer = setInterval(() => setLiveClock(new Date()), 20000);
+    return () => clearInterval(timer);
+  }, []);
+  const currentLiveHour = liveClock.getHours() + liveClock.getMinutes() / 60 + liveClock.getSeconds() / 3600;
 
   // Active hour: user-scrubbed hour if active, else current live hour
   const isScrubbing = scrubHour !== null;
@@ -372,6 +441,93 @@ export default function TideScreen() {
     }, 8500);
   };
 
+  // Dynamic Maximum Scale for Harbor Chart (e.g. Mandvi up to 6.5m, Okha 4.0m, Veraval 3.5m)
+  const maxScale = useMemo(() => {
+    return Math.max(3.5, Math.ceil(port.highSpringMax * 1.05 * 2) / 2);
+  }, [port.highSpringMax]);
+
+  const gridSteps = useMemo(() => {
+    const steps: number[] = [];
+    const stepSize = maxScale > 4 ? 1.0 : 0.5;
+    for (let s = stepSize; s < maxScale; s += stepSize) {
+      steps.push(parseFloat(s.toFixed(1)));
+    }
+    return steps;
+  }, [maxScale]);
+
+  // 5-Day Tidal Tabs Strip for quick navigation across 5 days
+  const fiveDayTabs = useMemo(() => {
+    const tabs: {
+      dateStr: string;
+      dayLabel: string;
+      dateFormatted: string;
+      moonIcon: string;
+      tideType: string;
+      tideBadgeBg: string;
+      tideTextColor: string;
+    }[] = [];
+    const baseNow = new Date();
+    const dayNamesEn = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const dayNamesGu = ['રવિ', 'સોમ', 'મંગળ', 'બુધ', 'ગુરુ', 'શુક્ર', 'શનિ'];
+    const dayNamesHi = ['रवि', 'सोम', 'मंगल', 'बुध', 'गुरु', 'शुक्र', 'शनि'];
+    const monthNamesEn = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const monthNamesGu = ['જાન્યુ', 'ફેબ્રુ', 'માર્ચ', 'એપ્રિલ', 'મે', 'જૂન', 'જુલાઈ', 'ઓગસ્ટ', 'સપ્ટે', 'ઓક્ટો', 'નવે', 'ડિસે'];
+    const monthNamesHi = ['जन', 'फर', 'मार्च', 'अप्रैल', 'मई', 'जून', 'जुलाई', 'अगस्त', 'सितं', 'अक्टू', 'नव', 'दिसं'];
+
+    for (let i = 0; i < 5; i++) {
+      const d = new Date(baseNow);
+      d.setDate(baseNow.getDate() + i);
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const dayNum = String(d.getDate()).padStart(2, '0');
+      const dateStr = `${y}-${m}-${dayNum}`;
+
+      const dayIdx = d.getDay();
+      let dayLabel = '';
+      if (i === 0) {
+        dayLabel = selectedLang === 'Gujarati' ? 'આજે' : selectedLang === 'Hindi' ? 'आज' : 'Today';
+      } else if (i === 1) {
+        dayLabel = selectedLang === 'Gujarati' ? 'આવતીકાલે' : selectedLang === 'Hindi' ? 'कल' : 'Tomorrow';
+      } else {
+        dayLabel = selectedLang === 'Gujarati' ? dayNamesGu[dayIdx] : selectedLang === 'Hindi' ? dayNamesHi[dayIdx] : dayNamesEn[dayIdx];
+      }
+
+      const mName = selectedLang === 'Gujarati' ? monthNamesGu[d.getMonth()] : selectedLang === 'Hindi' ? monthNamesHi[d.getMonth()] : monthNamesEn[d.getMonth()];
+      const dateFormatted = `${d.getDate()} ${mName}`;
+
+      const dayAstro = getMoonPhaseDetails(new Date(y, d.getMonth(), d.getDate(), 12, 0, 0), port.lat, port.lon);
+      const moonIcon = dayAstro.phase < 0.06 || dayAstro.phase >= 0.94 ? '🌑' :
+        dayAstro.phase < 0.22 ? '🌒' :
+        dayAstro.phase < 0.28 ? '🌓' :
+        dayAstro.phase < 0.47 ? '🌔' :
+        dayAstro.phase < 0.53 ? '🌕' :
+        dayAstro.phase < 0.72 ? '🌖' :
+        dayAstro.phase < 0.78 ? '🌗' : '🌘';
+
+      const isSpring = dayAstro.tideType === 'spring';
+      const isNeap = dayAstro.tideType === 'neap';
+      const tideType = isSpring
+        ? (selectedLang === 'Gujarati' ? 'જુવાર' : selectedLang === 'Hindi' ? 'ज्वार' : 'Spring')
+        : isNeap
+          ? (selectedLang === 'Gujarati' ? 'ભાંજ' : selectedLang === 'Hindi' ? 'भांज' : 'Neap')
+          : (selectedLang === 'Gujarati' ? 'સામાન્ય' : selectedLang === 'Hindi' ? 'सामान्य' : 'Normal');
+
+      const tideBadgeBg = isSpring ? 'rgba(0, 229, 255, 0.15)' : isNeap ? 'rgba(255, 145, 0, 0.15)' : 'rgba(2, 136, 209, 0.1)';
+      const tideTextColor = isSpring ? '#00E5FF' : isNeap ? '#FF9100' : '#0288D1';
+
+      tabs.push({
+        dateStr,
+        dayLabel,
+        dateFormatted,
+        moonIcon,
+        tideType,
+        tideBadgeBg,
+        tideTextColor,
+      });
+    }
+    return tabs;
+  }, [selectedLang, port.lat, port.lon]);
+
   // Compute 96 sample points for a continuous, silky-smooth tidal sine wave
   const wavePoints = useMemo(() => {
     const totalSamples = 96;
@@ -382,11 +538,11 @@ export default function TideScreen() {
       const hour = (i / totalSamples) * 24;
       const x = (i / totalSamples) * w;
       const { height } = getTideHeightAtHour(hour, dailyEvents);
-      const y = heightToY(height, CHART_HEIGHT);
+      const y = heightToY(height, chartHeight, maxScale);
       pts.push({ x, y, h: height, t: hour });
     }
     return pts;
-  }, [chartWidth, dailyEvents, fallbackChartWidth]);
+  }, [chartWidth, dailyEvents, fallbackChartWidth, maxScale, chartHeight]);
 
   // SVG Wave Paths: Line Stroke & Gradient Area Fill
   const { strokePath, fillPath } = useMemo(() => {
@@ -397,10 +553,10 @@ export default function TideScreen() {
       .map((p, idx) => (idx === 0 ? `M ${p.x.toFixed(1)} ${p.y.toFixed(1)}` : `L ${p.x.toFixed(1)} ${p.y.toFixed(1)}`))
       .join(' ');
 
-    const fillD = `${strokeD} L ${w.toFixed(1)} ${CHART_HEIGHT} L 0 ${CHART_HEIGHT} Z`;
+    const fillD = `${strokeD} L ${w.toFixed(1)} ${chartHeight} L 0 ${chartHeight} Z`;
 
     return { strokePath: strokeD, fillPath: fillD };
-  }, [wavePoints, chartWidth, fallbackChartWidth]);
+  }, [wavePoints, chartWidth, fallbackChartWidth, chartHeight]);
 
   // Handle Chart Touch & Scrubbing
   const handleChartTouch = (xPos: number) => {
@@ -441,24 +597,55 @@ export default function TideScreen() {
   };
 
   const handlePrevDay = () => {
-    const d = new Date(selectedDate);
-    d.setDate(d.getDate() - 1);
-    setSelectedDate(d.toISOString().split('T')[0]);
+    const [y, m, d] = selectedDate.split('-').map(Number);
+    const dateObj = new Date(y, m - 1, d);
+    dateObj.setDate(dateObj.getDate() - 1);
+    const ny = dateObj.getFullYear();
+    const nm = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const nd = String(dateObj.getDate()).padStart(2, '0');
+    setSelectedDate(`${ny}-${nm}-${nd}`);
   };
 
   const handleNextDay = () => {
-    const d = new Date(selectedDate);
-    d.setDate(d.getDate() + 1);
-    setSelectedDate(d.toISOString().split('T')[0]);
+    const [y, m, d] = selectedDate.split('-').map(Number);
+    const dateObj = new Date(y, m - 1, d);
+    dateObj.setDate(dateObj.getDate() + 1);
+    const ny = dateObj.getFullYear();
+    const nm = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const nd = String(dateObj.getDate()).padStart(2, '0');
+    setSelectedDate(`${ny}-${nm}-${nd}`);
   };
 
-  // Cursor coordinates on SVG canvas
+  const handleResetToToday = () => {
+    setSelectedDate(getTodayDateStr());
+    setScrubHour(null);
+    setActiveEventIdx(null);
+  };
+
+  const isToday = selectedDate === getTodayDateStr();
+
+  // Cursor coordinates on SVG canvas (user scrubbed or live)
   const cursorX = useMemo(() => {
     const w = chartWidth > 0 ? chartWidth : fallbackChartWidth;
     return (activeHour / 24) * w;
   }, [activeHour, chartWidth, fallbackChartWidth]);
 
-  const cursorY = useMemo(() => heightToY(activeHeight, CHART_HEIGHT), [activeHeight]);
+  const cursorY = useMemo(() => heightToY(activeHeight, chartHeight, maxScale), [activeHeight, maxScale, chartHeight]);
+
+  // Real-time Current Time Vertical Indicator Coordinates (Pinned to real clock on Today's chart)
+  const liveMarkerX = useMemo(() => {
+    const w = chartWidth > 0 ? chartWidth : fallbackChartWidth;
+    return (currentLiveHour / 24) * w;
+  }, [currentLiveHour, chartWidth, fallbackChartWidth]);
+
+  const { height: liveMarkerHeight } = useMemo(() => {
+    return getTideHeightAtHour(currentLiveHour, dailyEvents);
+  }, [currentLiveHour, dailyEvents]);
+
+  const liveMarkerY = useMemo(
+    () => heightToY(liveMarkerHeight, chartHeight, maxScale),
+    [liveMarkerHeight, maxScale, chartHeight]
+  );
 
   const tooltipX = useMemo(() => {
     const w = chartWidth > 0 ? chartWidth : fallbackChartWidth;
@@ -479,6 +666,33 @@ export default function TideScreen() {
       accentCyan: '#00E5FF',
       accentBlue: '#0288D1',
       pillBg: '#1E293B',
+      meterCardBg: '#06172E',
+      meterCardBorder: '#0F3460',
+      meterTitle: '#00E5FF',
+      meterRowBg: 'rgba(255, 255, 255, 0.05)',
+      meterValueText: '#FFFFFF',
+      chartCardBg: '#041326',
+      chartCardBorder: '#0F3460',
+      chartCanvasBg: '#020C1A',
+      chartCanvasBorder: 'rgba(0, 229, 255, 0.18)',
+      chartGridLine: 'rgba(255, 255, 255, 0.09)',
+      chartTimeLine: 'rgba(255, 255, 255, 0.05)',
+      chartGridText: 'rgba(255, 255, 255, 0.42)',
+      timeAxisText: '#80DEEA',
+      waveStroke: '#00E5FF',
+      waveGlow: 'rgba(0, 229, 255, 0.25)',
+      waveGradTop: '#00E5FF',
+      waveGradMid: '#0288D1',
+      waveGradBot: '#031124',
+      tooltipBg: '#03172E',
+      tooltipBorder: '#00E5FF',
+      tooltipTimeText: '#90CAF9',
+      tooltipValText: '#FFFFFF',
+      gaugeTrackBg: 'rgba(255, 255, 255, 0.1)',
+      voiceBtnBg: 'rgba(2, 136, 209, 0.2)',
+      voiceBtnBorder: 'rgba(0, 229, 255, 0.3)',
+      voiceBtnTitle: '#FFFFFF',
+      voiceBtnSub: '#81D4FA',
     }
     : {
       bg: '#F8FAFC',
@@ -491,6 +705,33 @@ export default function TideScreen() {
       accentCyan: '#00838F',
       accentBlue: '#0288D1',
       pillBg: '#F1F5F9',
+      meterCardBg: '#FFFFFF',
+      meterCardBorder: '#E2E8F0',
+      meterTitle: '#0288D1',
+      meterRowBg: '#F8FAFC',
+      meterValueText: '#0F172A',
+      chartCardBg: '#FFFFFF',
+      chartCardBorder: '#E2E8F0',
+      chartCanvasBg: '#F0F9FF',
+      chartCanvasBorder: '#BAE6FD',
+      chartGridLine: 'rgba(2, 136, 209, 0.14)',
+      chartTimeLine: 'rgba(0, 0, 0, 0.06)',
+      chartGridText: 'rgba(2, 136, 209, 0.75)',
+      timeAxisText: '#0369A1',
+      waveStroke: '#0288D1',
+      waveGlow: 'rgba(2, 136, 209, 0.2)',
+      waveGradTop: '#0288D1',
+      waveGradMid: '#38BDF8',
+      waveGradBot: '#E0F2FE',
+      tooltipBg: '#FFFFFF',
+      tooltipBorder: '#0288D1',
+      tooltipTimeText: '#0288D1',
+      tooltipValText: '#0F172A',
+      gaugeTrackBg: '#E2E8F0',
+      voiceBtnBg: '#F0F9FF',
+      voiceBtnBorder: '#BAE6FD',
+      voiceBtnTitle: '#0369A1',
+      voiceBtnSub: '#0288D1',
     };
 
   return (
@@ -586,24 +827,102 @@ export default function TideScreen() {
             <TouchableOpacity onPress={handleNextDay} style={styles.dateArrowBtn}>
               <Text style={[styles.dateArrowText, { color: colors.accentBlue }]}>›</Text>
             </TouchableOpacity>
+            {isToday ? (
+              <View style={{ backgroundColor: 'rgba(0, 229, 255, 0.15)', borderColor: '#00E5FF', borderWidth: 1, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, marginLeft: 4 }}>
+                <Text style={{ fontSize: 10, fontWeight: '800', color: '#00E5FF' }}>
+                  {selectedLang === 'Gujarati' ? 'આજે' : selectedLang === 'Hindi' ? 'आज' : 'TODAY'}
+                </Text>
+              </View>
+            ) : (
+              <TouchableOpacity onPress={handleResetToToday} style={{ backgroundColor: colors.pillBg, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, marginLeft: 4 }}>
+                <Text style={{ fontSize: 10, fontWeight: '700', color: colors.accentBlue }}>
+                  {selectedLang === 'Gujarati' ? 'આજ પર લાવો' : selectedLang === 'Hindi' ? 'आज' : 'Today'}
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
 
           <View style={styles.moonStatusBadge}>
             <Text style={styles.moonStatusEmoji}>🌙</Text>
             <Text style={[styles.moonStatusText, { color: colors.textSecondary }]}>
-              {moonInfo.phaseNameEn} ({moonInfo.illumination}%)
+              {selectedLang === 'Gujarati' ? moonInfo.phaseNameGu : selectedLang === 'Hindi' ? moonInfo.phaseNameHi : moonInfo.phaseNameEn} ({moonInfo.illumination}%)
             </Text>
           </View>
+        </View>
+
+        {/* 5-DAY HORIZONTAL SCROLLABLE TIDE SELECTOR */}
+        <View style={styles.fiveDayContainer}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.fiveDayScrollContent}>
+            {fiveDayTabs.map((item) => {
+              const isSelected = selectedDate === item.dateStr;
+              return (
+                <TouchableOpacity
+                  key={item.dateStr}
+                  activeOpacity={0.75}
+                  onPress={() => {
+                    setSelectedDate(item.dateStr);
+                    setScrubHour(null);
+                    setActiveEventIdx(null);
+                  }}
+                  style={[
+                    styles.fiveDayCard,
+                    {
+                      backgroundColor: isSelected
+                        ? isNight ? 'rgba(0, 229, 255, 0.16)' : 'rgba(2, 136, 209, 0.12)'
+                        : colors.cardBg,
+                      borderColor: isSelected
+                        ? colors.accentCyan
+                        : colors.cardBorder,
+                      borderWidth: isSelected ? 1.8 : 1,
+                    },
+                  ]}>
+                  <View style={styles.fiveDayTopRow}>
+                    <Text
+                      style={[
+                        styles.fiveDayDayText,
+                        {
+                          color: isSelected ? colors.accentCyan : colors.textPrimary,
+                          fontWeight: isSelected ? '800' : '600',
+                        },
+                      ]}>
+                      {item.dayLabel}
+                    </Text>
+                    <Text style={styles.fiveDayMoonIcon}>{item.moonIcon}</Text>
+                  </View>
+                  <Text style={[styles.fiveDayDateText, { color: colors.textSecondary }]}>
+                    {item.dateFormatted}
+                  </Text>
+                  <View style={[styles.fiveDayTideBadge, { backgroundColor: item.tideBadgeBg }]}>
+                    <Text style={[styles.fiveDayTideText, { color: item.tideTextColor }]}>
+                      {item.tideType}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
         </View>
 
         {/* ========================================================================= */}
         {/* 1. TOP LIVE TIDE METER INSTRUMENT (Digital Gauge & Water State)           */}
         {/* ========================================================================= */}
-        <View style={[styles.tideMeterCard, isNight && styles.tideMeterCardNight]}>
+        <View
+          style={[
+            styles.tideMeterCard,
+            {
+              backgroundColor: colors.meterCardBg,
+              borderColor: colors.meterCardBorder,
+              shadowColor: isNight ? '#00E5FF' : '#000',
+              shadowOpacity: isNight ? 0.18 : 0.06,
+            },
+          ]}>
           <View style={styles.tideMeterHeaderRow}>
             <View style={styles.tideMeterTitleWrap}>
               <Text style={styles.tideMeterIcon}>🌊</Text>
-              <Text style={styles.tideMeterTitle}>{t.tideMeterTitle}</Text>
+              <Text style={[styles.tideMeterTitle, { color: colors.meterTitle }]}>{t.tideMeterTitle}</Text>
             </View>
 
             {isScrubbing && (
@@ -614,21 +933,21 @@ export default function TideScreen() {
           </View>
 
           {/* Main Meter Readout Row */}
-          <View style={styles.meterMainRow}>
+          <View style={[styles.meterMainRow, { backgroundColor: colors.meterRowBg }]}>
             {/* Height Readout */}
             <View style={styles.meterHeightCol}>
-              <View style={styles.meterBadgePill}>
-                <Text style={styles.meterBadgePillText}>
+              <View style={[styles.meterBadgePill, !isNight && { backgroundColor: 'rgba(2, 136, 209, 0.12)' }]}>
+                <Text style={[styles.meterBadgePillText, !isNight && { color: '#0288D1' }]}>
                   {isScrubbing ? `🎯 ${t.selectedTime}` : `📡 ${t.liveTime}`}
                 </Text>
               </View>
 
               <View style={styles.meterValueRow}>
-                <Text style={styles.meterValueNumber}>{activeHeight.toFixed(2)}</Text>
-                <Text style={styles.meterValueUnit}>m</Text>
+                <Text style={[styles.meterValueNumber, isSmallDevice && { fontSize: 34 }, { color: colors.meterValueText }]}>{activeHeight.toFixed(2)}</Text>
+                <Text style={[styles.meterValueUnit, { color: colors.accentBlue }]}>m</Text>
               </View>
 
-              <Text style={styles.meterTimeValue}>🕒 {activeTimeStr}</Text>
+              <Text style={[styles.meterTimeValue, { color: colors.textSecondary }]}>🕒 {activeTimeStr}</Text>
             </View>
 
             {/* Rising / Falling Direction Badge */}
@@ -647,7 +966,7 @@ export default function TideScreen() {
               </View>
 
               <View style={styles.flowRateRow}>
-                <Text style={styles.flowRateLabel}>{t.flowRate}:</Text>
+                <Text style={[styles.flowRateLabel, { color: colors.textSecondary }]}>{t.flowRate}:</Text>
                 <Text style={[styles.flowRateValue, { color: isRising ? '#00E676' : '#FFB74D' }]}>
                   {isRising ? '+' : ''}{activeRate.toFixed(2)} m/h
                 </Text>
@@ -659,14 +978,21 @@ export default function TideScreen() {
           <TouchableOpacity
             activeOpacity={0.85}
             onPress={handleToggleVoiceAnnouncement}
-            style={[styles.voiceMeterButton, isSpeaking && styles.voiceMeterButtonActive]}>
+            style={[
+              styles.voiceMeterButton,
+              {
+                backgroundColor: colors.voiceBtnBg,
+                borderColor: colors.voiceBtnBorder,
+              },
+              isSpeaking && styles.voiceMeterButtonActive,
+            ]}>
             <View style={styles.voiceMeterLeft}>
               <Text style={styles.voiceMeterSpeakerIcon}>{isSpeaking ? '⏹️' : '📢'}</Text>
               <View style={styles.voiceMeterTextWrap}>
-                <Text style={styles.voiceMeterMainTitle}>
+                <Text style={[styles.voiceMeterMainTitle, { color: colors.voiceBtnTitle }]}>
                   {isSpeaking ? t.stopVoice : t.listenVoice}
                 </Text>
-                <Text style={styles.voiceMeterSubTitle}>{t.langSubtitle}</Text>
+                <Text style={[styles.voiceMeterSubTitle, { color: colors.voiceBtnSub }]}>{t.langSubtitle}</Text>
               </View>
             </View>
             <View style={[styles.voicePlayPill, isSpeaking && styles.voicePlayPillActive]}>
@@ -674,19 +1000,19 @@ export default function TideScreen() {
             </View>
           </TouchableOpacity>
 
-          {/* Water Level Gauge Bar (0.0m to 3.5m) */}
+          {/* Water Level Gauge Bar (0.0m to maxScale) */}
           <View style={styles.gaugeContainer}>
             <View style={styles.gaugeScaleRow}>
-              <Text style={styles.gaugeScaleText}>{t.minScale}</Text>
-              <Text style={styles.gaugeScaleText}>1.75m</Text>
-              <Text style={styles.gaugeScaleText}>{t.maxScale}</Text>
+              <Text style={[styles.gaugeScaleText, { color: colors.textSecondary }]}>{t.minScale}</Text>
+              <Text style={[styles.gaugeScaleText, { color: colors.textSecondary }]}>{(maxScale / 2).toFixed(2)}m</Text>
+              <Text style={[styles.gaugeScaleText, { color: colors.textSecondary }]}>{maxScale.toFixed(1)}m (Spring)</Text>
             </View>
-            <View style={styles.gaugeTrack}>
+            <View style={[styles.gaugeTrack, { backgroundColor: colors.gaugeTrackBg }]}>
               <View
                 style={[
                   styles.gaugeFill,
                   {
-                    width: `${Math.min(100, Math.max(6, (activeHeight / 3.5) * 100))}%`,
+                    width: `${Math.min(100, Math.max(6, (activeHeight / maxScale) * 100))}%`,
                     backgroundColor: isRising ? '#00E5FF' : '#FF9100',
                   },
                 ]}
@@ -696,16 +1022,36 @@ export default function TideScreen() {
 
           {/* Interaction Instruction Banner */}
           <View style={styles.scrubHintBox}>
-            <Text style={styles.scrubHintText}>{t.scrubHint}</Text>
+            <Text style={[styles.scrubHintText, { color: colors.accentBlue }]}>{t.scrubHint}</Text>
           </View>
         </View>
 
         {/* ========================================================================= */}
         {/* 2. LATEST & BEST UI INTERACTIVE 24-HOUR TIDAL WAVE SVG CHART              */}
         {/* ========================================================================= */}
-        <View style={styles.graphContainer}>
+        <View
+          style={[
+            styles.graphContainer,
+            {
+              backgroundColor: colors.chartCardBg,
+              borderColor: colors.chartCardBorder,
+              shadowColor: isNight ? '#00E5FF' : '#000',
+              shadowOpacity: isNight ? 0.20 : 0.06,
+            },
+          ]}>
           <View style={styles.graphHeader}>
-            <Text style={styles.graphDateLabel}>{selectedDate.slice(5)} (24H TIDE WAVE)</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Text style={[styles.graphDateLabel, { color: colors.textPrimary }]}>
+                {selectedDate.slice(5)} (24H TIDE WAVE)
+              </Text>
+              {isToday && (
+                <View style={{ backgroundColor: 'rgba(255, 61, 0, 0.15)', borderColor: '#FF3D00', borderWidth: 1, borderRadius: 5, paddingHorizontal: 5, paddingVertical: 1.5 }}>
+                  <Text style={{ fontSize: 9.5, fontWeight: '900', color: '#FF3D00' }}>
+                    ● {selectedLang === 'Gujarati' ? 'લાઇવ સમય' : selectedLang === 'Hindi' ? 'लाइव समय' : 'LIVE NOW'}
+                  </Text>
+                </View>
+              )}
+            </View>
             <View style={[styles.currentStatusPill, isRising ? styles.statusPillRisingMini : styles.statusPillFallingMini]}>
               <Text style={[styles.currentStatusText, isRising ? styles.statusTextRising : styles.statusTextFalling]}>
                 {isRising ? t.rising : t.falling}
@@ -715,7 +1061,14 @@ export default function TideScreen() {
 
           {/* Interactive Chart Canvas */}
           <View
-            style={styles.chartCanvas}
+            style={[
+              styles.chartCanvas,
+              {
+                height: chartHeight,
+                backgroundColor: colors.chartCanvasBg,
+                borderColor: colors.chartCanvasBorder,
+              },
+            ]}
             onLayout={(e) => {
               const w = e.nativeEvent.layout.width;
               if (w > 50) setChartWidth(w);
@@ -751,27 +1104,27 @@ export default function TideScreen() {
                 },
               }
               : {})}>
-            <Svg width="100%" height={CHART_HEIGHT}>
+            <Svg width="100%" height={chartHeight}>
               <Defs>
-                {/* Ocean Wave Surface to Seabed Deep Gradient Fill */}
+                {/* Ocean Wave Surface to Seabed Deep Gradient Fill - Theme Aware */}
                 <LinearGradient id="oceanWaveGrad" x1="0" y1="0" x2="0" y2="1">
-                  <Stop offset="0%" stopColor="#00E5FF" stopOpacity="0.55" />
-                  <Stop offset="30%" stopColor="#0288D1" stopOpacity="0.32" />
-                  <Stop offset="70%" stopColor="#01579B" stopOpacity="0.15" />
-                  <Stop offset="100%" stopColor="#031124" stopOpacity="0.02" />
+                  <Stop offset="0%" stopColor={colors.waveGradTop} stopOpacity={isNight ? '0.55' : '0.40'} />
+                  <Stop offset="35%" stopColor={colors.waveGradMid} stopOpacity={isNight ? '0.30' : '0.20'} />
+                  <Stop offset="75%" stopColor={colors.waveGradBot} stopOpacity={isNight ? '0.14' : '0.08'} />
+                  <Stop offset="100%" stopColor={colors.chartCanvasBg} stopOpacity="0.02" />
                 </LinearGradient>
 
-                {/* Electric Cyan Neon Wave Stroke */}
+                {/* Wave Stroke Linear Gradient */}
                 <LinearGradient id="waveStrokeGrad" x1="0" y1="0" x2="1" y2="0">
-                  <Stop offset="0%" stopColor="#00F0FF" />
-                  <Stop offset="50%" stopColor="#00E5FF" />
-                  <Stop offset="100%" stopColor="#29B6F6" />
+                  <Stop offset="0%" stopColor={colors.waveStroke} />
+                  <Stop offset="50%" stopColor={colors.waveStroke} />
+                  <Stop offset="100%" stopColor={isNight ? '#29B6F6' : '#0288D1'} />
                 </LinearGradient>
               </Defs>
 
-              {/* Horizontal Depth Reference Gridlines (0.5m to 3.0m) */}
-              {[0.5, 1.0, 1.5, 2.0, 2.5, 3.0].map((hVal) => {
-                const yPos = heightToY(hVal, CHART_HEIGHT);
+              {/* Horizontal Depth Reference Gridlines */}
+              {gridSteps.map((hVal) => {
+                const yPos = heightToY(hVal, chartHeight, maxScale);
                 return (
                   <G key={`depth-${hVal}`}>
                     <Line
@@ -779,14 +1132,14 @@ export default function TideScreen() {
                       y1={yPos}
                       x2={chartWidth}
                       y2={yPos}
-                      stroke="rgba(255, 255, 255, 0.09)"
+                      stroke={colors.chartGridLine}
                       strokeWidth="1"
                       strokeDasharray="3, 3"
                     />
                     <SvgText
                       x="8"
                       y={yPos - 3}
-                      fill="rgba(255, 255, 255, 0.42)"
+                      fill={colors.chartGridText}
                       fontSize="9"
                       fontWeight="bold">
                       {hVal.toFixed(1)}m
@@ -804,8 +1157,8 @@ export default function TideScreen() {
                     x1={xPos}
                     y1={PADDING_TOP - 6}
                     x2={xPos}
-                    y2={CHART_HEIGHT - PADDING_BOTTOM}
-                    stroke="rgba(255, 255, 255, 0.05)"
+                    y2={chartHeight - PADDING_BOTTOM}
+                    stroke={colors.chartTimeLine}
                     strokeWidth="1"
                   />
                 );
@@ -819,9 +1172,9 @@ export default function TideScreen() {
                 <Path
                   d={strokePath}
                   fill="none"
-                  stroke="#00E5FF"
+                  stroke={colors.waveStroke}
                   strokeWidth="5"
-                  strokeOpacity="0.25"
+                  strokeOpacity={isNight ? '0.25' : '0.15'}
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 />
@@ -843,7 +1196,7 @@ export default function TideScreen() {
               {dailyEvents.map((evt, idx) => {
                 const evtHour = parseTimeToDecimalHour(evt.time);
                 const evtX = (evtHour / 24) * chartWidth;
-                const evtY = heightToY(evt.height, CHART_HEIGHT);
+                const evtY = heightToY(evt.height, chartHeight, maxScale);
                 const isHigh = evt.type === 'high';
 
                 return (
@@ -854,7 +1207,7 @@ export default function TideScreen() {
                       cy={evtY}
                       r="6.5"
                       fill={isHigh ? 'rgba(0, 229, 255, 0.25)' : 'rgba(255, 145, 0, 0.25)'}
-                      stroke={isHigh ? '#00E5FF' : '#FF9100'}
+                      stroke={isHigh ? (isNight ? '#00E5FF' : '#0288D1') : '#FF9100'}
                       strokeWidth="1"
                     />
                     {/* Center Dot */}
@@ -862,14 +1215,14 @@ export default function TideScreen() {
                       cx={evtX}
                       cy={evtY}
                       r="3.5"
-                      fill={isHigh ? '#00E5FF' : '#FF9100'}
+                      fill={isHigh ? (isNight ? '#00E5FF' : '#0288D1') : '#FF9100'}
                     />
 
                     {/* Peak Tag Label */}
                     <SvgText
                       x={evtX}
-                      y={isHigh ? Math.max(14, evtY - 9) : Math.min(CHART_HEIGHT - 6, evtY + 14)}
-                      fill={isHigh ? '#00E5FF' : '#FFB74D'}
+                      y={isHigh ? Math.max(14, evtY - 9) : Math.min(chartHeight - 6, evtY + 14)}
+                      fill={isHigh ? (isNight ? '#00E5FF' : '#0288D1') : '#FF9100'}
                       fontSize="9"
                       fontWeight="bold"
                       textAnchor="middle">
@@ -879,25 +1232,89 @@ export default function TideScreen() {
                 );
               })}
 
+              {/* ============================================================= */}
+              {/* CURRENT LIVE TIME INDICATOR LINE & PIN (Shown on Today's wave)*/}
+              {/* ============================================================= */}
+              {isToday && (
+                <G key="live-now-indicator">
+                  {/* Subtle Neon Coral Glow behind line */}
+                  <Line
+                    x1={liveMarkerX}
+                    y1={PADDING_TOP - 16}
+                    x2={liveMarkerX}
+                    y2={chartHeight - PADDING_BOTTOM + 8}
+                    stroke="#FF3D00"
+                    strokeWidth="4"
+                    strokeOpacity="0.22"
+                  />
+
+                  {/* Sharp Vertical Current Time Marker Line */}
+                  <Line
+                    x1={liveMarkerX}
+                    y1={PADDING_TOP - 16}
+                    x2={liveMarkerX}
+                    y2={chartHeight - PADDING_BOTTOM + 8}
+                    stroke="#FF3D00"
+                    strokeWidth="1.8"
+                    strokeDasharray="4, 3"
+                  />
+
+                  {/* Top Live Time Tag/Badge */}
+                  <Rect
+                    x={Math.max(2, Math.min((chartWidth > 0 ? chartWidth : fallbackChartWidth) - 54, liveMarkerX - 27))}
+                    y={PADDING_TOP - 22}
+                    width="54"
+                    height="16"
+                    rx="4"
+                    fill="#FF3D00"
+                  />
+                  <SvgText
+                    x={Math.max(29, Math.min((chartWidth > 0 ? chartWidth : fallbackChartWidth) - 27, liveMarkerX))}
+                    y={PADDING_TOP - 10}
+                    fill="#FFFFFF"
+                    fontSize="8.5"
+                    fontWeight="900"
+                    textAnchor="middle">
+                    ● {selectedLang === 'Gujarati' ? 'લાઈવ' : selectedLang === 'Hindi' ? 'लाइव' : 'NOW'}
+                  </SvgText>
+
+                  {/* Pulsing Dot Snapped on Current Water Level */}
+                  <Circle
+                    cx={liveMarkerX}
+                    cy={liveMarkerY}
+                    r="8"
+                    fill="rgba(255, 61, 0, 0.3)"
+                  />
+                  <Circle
+                    cx={liveMarkerX}
+                    cy={liveMarkerY}
+                    r="4.5"
+                    fill="#FF3D00"
+                    stroke="#FFFFFF"
+                    strokeWidth="1.8"
+                  />
+                </G>
+              )}
+
               {/* Scrubber Cursor Guideline (Vertical Line) */}
               <Line
                 x1={cursorX}
                 y1={PADDING_TOP - 10}
                 x2={cursorX}
-                y2={CHART_HEIGHT - PADDING_BOTTOM + 8}
-                stroke="#00E5FF"
+                y2={chartHeight - PADDING_BOTTOM + 8}
+                stroke={isNight ? '#00E5FF' : '#0288D1'}
                 strokeWidth="1.5"
                 strokeDasharray="3, 2"
               />
 
               {/* Pulsing Luminous Snapped Cursor Circle on Wave */}
-              <Circle cx={cursorX} cy={cursorY} r="9" fill="rgba(0, 229, 255, 0.35)" />
+              <Circle cx={cursorX} cy={cursorY} r="9" fill={isNight ? 'rgba(0, 229, 255, 0.35)' : 'rgba(2, 136, 209, 0.25)'} />
               <Circle
                 cx={cursorX}
                 cy={cursorY}
                 r="4.5"
                 fill="#FFFFFF"
-                stroke="#00E5FF"
+                stroke={isNight ? '#00E5FF' : '#0288D1'}
                 strokeWidth="2"
               />
 
@@ -908,14 +1325,14 @@ export default function TideScreen() {
                 width="104"
                 height="28"
                 rx="6"
-                fill="#03172E"
-                stroke="#00E5FF"
+                fill={colors.tooltipBg}
+                stroke={colors.tooltipBorder}
                 strokeWidth="1.2"
               />
               <SvgText
                 x={tooltipX}
                 y={tooltipY + 11}
-                fill="#90CAF9"
+                fill={colors.tooltipTimeText}
                 fontSize="8.5"
                 fontWeight="bold"
                 textAnchor="middle">
@@ -924,7 +1341,7 @@ export default function TideScreen() {
               <SvgText
                 x={tooltipX}
                 y={tooltipY + 23}
-                fill="#FFFFFF"
+                fill={colors.tooltipValText}
                 fontSize="10"
                 fontWeight="900"
                 textAnchor="middle">
@@ -935,15 +1352,11 @@ export default function TideScreen() {
 
           {/* Time Axis Labels: 12AM, 3AM, 6AM, 9AM, 12PM, 3PM, 6PM, 9PM, 12AM */}
           <View style={styles.timeAxisRow}>
-            <Text style={styles.timeAxisLabel}>12AM</Text>
-            <Text style={styles.timeAxisLabel}>3AM</Text>
-            <Text style={styles.timeAxisLabel}>6AM</Text>
-            <Text style={styles.timeAxisLabel}>9AM</Text>
-            <Text style={styles.timeAxisLabel}>12PM</Text>
-            <Text style={styles.timeAxisLabel}>3PM</Text>
-            <Text style={styles.timeAxisLabel}>6PM</Text>
-            <Text style={styles.timeAxisLabel}>9PM</Text>
-            <Text style={styles.timeAxisLabel}>12AM</Text>
+            {['12AM', '3AM', '6AM', '9AM', '12PM', '3PM', '6PM', '9PM', '12AM'].map((label, idx) => (
+              <Text key={idx} style={[styles.timeAxisLabel, { color: colors.timeAxisText }]}>
+                {label}
+              </Text>
+            ))}
           </View>
         </View>
 
@@ -1048,50 +1461,173 @@ export default function TideScreen() {
         </View>
       </ScrollView>
 
-      {/* PORT SELECTOR MODAL (Shows ONLY Port Name) */}
-      <Modal visible={showPortModal} transparent animationType="fade">
+      {/* GUJARAT ALL BANDARS SELECTOR MODAL WITH GPS DISTANCE (KM) & SEARCH */}
+      <Modal visible={showPortModal} transparent animationType="slide">
         <TouchableWithoutFeedback onPress={() => setShowPortModal(false)}>
           <View style={styles.modalBackdrop}>
-            <View style={[styles.pickerCard, { backgroundColor: colors.cardBg }]}>
-              <Text style={[styles.pickerTitle, { color: colors.textPrimary }]}>⚓ {t.selectPort}</Text>
-              {MARINE_PORTS_DATABASE.map((item) => {
-                const isSelected = selectedPortId === item.id;
-                const displayName =
-                  selectedLang === 'Gujarati'
-                    ? `${item.nameGu} (${item.name})`
-                    : selectedLang === 'Hindi'
-                      ? `${item.nameHi || item.name} (${item.name})`
-                      : item.name;
-
-                return (
+            <TouchableWithoutFeedback onPress={() => {}}>
+              <View style={[styles.bandarModalCard, { backgroundColor: colors.cardBg, borderColor: colors.cardBorder }]}>
+                {/* Header */}
+                <View style={styles.bandarModalHeader}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.bandarModalTitle, { color: colors.textPrimary }]}>
+                      ⚓ ગુજરાતના તમામ બંદરો ({MARINE_PORTS_DATABASE.length})
+                    </Text>
+                    <Text style={[styles.bandarModalSubtitle, { color: colors.accentBlue }]}>
+                      {currentGps
+                        ? `📍 તમારું સ્થાન: ${currentGps.latitude.toFixed(2)}°N, ${currentGps.longitude.toFixed(2)}°E • નજીકનું બંદર પહેલાં`
+                        : '📍 GPS લોકેશન આધારે કિલોમીટર (km) ગણતરી'}
+                    </Text>
+                  </View>
                   <TouchableOpacity
-                    key={item.id}
-                    onPress={() => {
-                      setSelectedPortId(item.id);
-                      setShowPortModal(false);
-                    }}
-                    style={[
-                      styles.pickerOption,
-                      { backgroundColor: colors.pillBg },
-                      isSelected && styles.pickerOptionSelected,
-                    ]}>
-                    <View style={styles.pickerOptionRow}>
-                      <Text
-                        style={[
-                          styles.pickerOptionText,
-                          { color: colors.textPrimary },
-                          isSelected && styles.pickerOptionTextSelected,
-                        ]}>
-                        {displayName}
-                      </Text>
-                      {isSelected && (
-                        <Text style={styles.pickerOptionCheck}>✓</Text>
-                      )}
-                    </View>
+                    onPress={() => setShowPortModal(false)}
+                    style={[styles.modalCloseBtn, { backgroundColor: colors.pillBg }]}>
+                    <Text style={[styles.modalCloseText, { color: colors.textPrimary }]}>✕</Text>
                   </TouchableOpacity>
-                );
-              })}
-            </View>
+                </View>
+
+                {/* Search Bar */}
+                <View style={[styles.bandarSearchBox, { backgroundColor: colors.pillBg, borderColor: colors.cardBorder }]}>
+                  <Text style={styles.searchIconText}>🔍</Text>
+                  <TextInput
+                    value={portSearchText}
+                    onChangeText={setPortSearchText}
+                    placeholder="બંદર શોધો / Search bandar name..."
+                    placeholderTextColor={colors.textSecondary}
+                    style={[styles.bandarSearchInput, { color: colors.textPrimary }]}
+                    autoCorrect={false}
+                    clearButtonMode="while-editing"
+                  />
+                  {portSearchText.length > 0 && (
+                    <TouchableOpacity onPress={() => setPortSearchText('')} style={styles.searchClearBtn}>
+                      <Text style={[styles.searchClearText, { color: colors.textSecondary }]}>✕</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {/* Scrollable Bandar List */}
+                <ScrollView
+                  style={styles.bandarScrollView}
+                  contentContainerStyle={styles.bandarScrollContent}
+                  showsVerticalScrollIndicator={true}
+                  keyboardShouldPersistTaps="handled">
+                  {filteredAndSortedPorts.length === 0 ? (
+                    <View style={styles.emptyPortView}>
+                      <Text style={{ fontSize: 28 }}>⚓</Text>
+                      <Text style={[styles.emptyPortText, { color: colors.textSecondary }]}>
+                        કોઈ બંદર મળ્યું નથી ("{portSearchText}")
+                      </Text>
+                    </View>
+                  ) : (
+                    filteredAndSortedPorts.map((item, idx) => {
+                      const isSelected = selectedPortId === item.id;
+                      const isClosest = idx === 0 && currentGps !== null && item.distanceKm !== null;
+                      const displayName =
+                        selectedLang === 'Gujarati'
+                          ? item.nameGu
+                          : selectedLang === 'Hindi'
+                            ? item.nameHi || item.name
+                            : item.name;
+
+                      return (
+                        <TouchableOpacity
+                          key={item.id}
+                          activeOpacity={0.7}
+                          onPress={() => {
+                            SettingsStore.setSelectedPortId(item.id);
+                            setSelectedPortId(item.id);
+                            setShowPortModal(false);
+                            setPortSearchText('');
+                          }}
+                          style={[
+                            styles.bandarItemCard,
+                            {
+                              backgroundColor: isSelected
+                                ? isNight
+                                  ? 'rgba(0, 229, 255, 0.12)'
+                                  : 'rgba(2, 136, 209, 0.12)'
+                                : colors.pillBg,
+                              borderColor: isSelected ? '#0288D1' : colors.cardBorder,
+                              borderWidth: isSelected ? 1.5 : 1,
+                            },
+                          ]}>
+                          <View style={styles.bandarItemLeft}>
+                            <View
+                              style={[
+                                styles.bandarIconCircle,
+                                {
+                                  backgroundColor: isSelected
+                                    ? '#0288D1'
+                                    : isNight
+                                      ? 'rgba(255,255,255,0.06)'
+                                      : 'rgba(0,0,0,0.04)',
+                                },
+                              ]}>
+                              <Text style={{ fontSize: 14 }}>{isSelected ? '⚓' : '⛵'}</Text>
+                            </View>
+
+                            <View style={styles.bandarNameCol}>
+                              <View style={styles.bandarTitleRow}>
+                                <Text
+                                  style={[
+                                    styles.bandarTitleText,
+                                    { color: isSelected ? '#0288D1' : colors.textPrimary },
+                                  ]}>
+                                  {displayName}
+                                </Text>
+                                {isClosest && (
+                                  <View style={styles.nearestBadge}>
+                                    <Text style={styles.nearestBadgeText}>સૌથી નજીક</Text>
+                                  </View>
+                                )}
+                              </View>
+                              <Text style={[styles.bandarSubText, { color: colors.textSecondary }]}>
+                                {item.name !== displayName ? `${item.name} • ` : ''}
+                                {item.regionGu || item.region}
+                              </Text>
+                            </View>
+                          </View>
+
+                          <View style={styles.bandarItemRight}>
+                            {item.distanceKm !== null ? (
+                              <View
+                                style={[
+                                  styles.distanceBadge,
+                                  {
+                                    backgroundColor: isClosest
+                                      ? 'rgba(0, 230, 118, 0.18)'
+                                      : isNight
+                                        ? 'rgba(0, 229, 255, 0.14)'
+                                        : 'rgba(2, 136, 209, 0.10)',
+                                    borderColor: isClosest ? '#00E676' : isNight ? '#00E5FF' : '#0288D1',
+                                  },
+                                ]}>
+                                <Text
+                                  style={[
+                                    styles.distanceBadgeText,
+                                    {
+                                      color: isClosest ? '#00E676' : isNight ? '#00E5FF' : '#0288D1',
+                                    },
+                                  ]}>
+                                  📍 {item.distanceKm} km
+                                </Text>
+                              </View>
+                            ) : (
+                              <Text style={[styles.distanceBadgeText, { color: colors.textSecondary }]}>
+                                📍 -- km
+                              </Text>
+                            )}
+                            {isSelected && (
+                              <Text style={styles.selectedCheckText}>✓</Text>
+                            )}
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })
+                  )}
+                </ScrollView>
+              </View>
+            </TouchableWithoutFeedback>
           </View>
         </TouchableWithoutFeedback>
       </Modal>
@@ -1866,6 +2402,162 @@ const styles = StyleSheet.create({
     color: '#0288D1',
     marginLeft: 8,
   },
+
+  /* Gujarat Coastal Bandar Modal Styles */
+  bandarModalCard: {
+    width: '95%',
+    maxHeight: '88%',
+    borderRadius: 20,
+    borderWidth: 1.5,
+    padding: 16,
+    gap: 12,
+    shadowColor: '#000',
+    shadowOpacity: 0.35,
+    shadowRadius: 14,
+    elevation: 10,
+  },
+  bandarModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingBottom: 4,
+    gap: 8,
+  },
+  bandarModalTitle: {
+    fontSize: 16.5,
+    fontWeight: '900',
+    letterSpacing: 0.2,
+  },
+  bandarModalSubtitle: {
+    fontSize: 11.5,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  modalCloseBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalCloseText: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  bandarSearchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    height: 42,
+    gap: 8,
+  },
+  searchIconText: {
+    fontSize: 14,
+  },
+  bandarSearchInput: {
+    flex: 1,
+    fontSize: 13.5,
+    fontWeight: '600',
+    paddingVertical: 0,
+  },
+  searchClearBtn: {
+    padding: 4,
+  },
+  searchClearText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  bandarScrollView: {
+    maxHeight: 460,
+  },
+  bandarScrollContent: {
+    gap: 8,
+    paddingVertical: 4,
+  },
+  emptyPortView: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 32,
+    gap: 8,
+  },
+  emptyPortText: {
+    fontSize: 13.5,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  bandarItemCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    gap: 8,
+  },
+  bandarItemLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  bandarIconCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bandarNameCol: {
+    flex: 1,
+    gap: 2,
+  },
+  bandarTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexWrap: 'wrap',
+  },
+  bandarTitleText: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  nearestBadge: {
+    backgroundColor: '#00E676',
+    paddingHorizontal: 6,
+    paddingVertical: 1.5,
+    borderRadius: 6,
+  },
+  nearestBadgeText: {
+    color: '#003314',
+    fontSize: 9.5,
+    fontWeight: '900',
+  },
+  bandarSubText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  bandarItemRight: {
+    alignItems: 'flex-end',
+    gap: 4,
+  },
+  distanceBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  distanceBadgeText: {
+    fontSize: 11.5,
+    fontWeight: '900',
+    letterSpacing: 0.2,
+  },
+  selectedCheckText: {
+    fontSize: 15,
+    fontWeight: '900',
+    color: '#0288D1',
+  },
   sunMoonCard: {
     width: '92%',
     borderRadius: 18,
@@ -1912,6 +2604,50 @@ const styles = StyleSheet.create({
   closeModalBtnText: {
     color: '#FFFFFF',
     fontSize: 15,
+    fontWeight: '800',
+  },
+
+  /* 5-Day Horizontal Tide Selector */
+  fiveDayContainer: {
+    marginVertical: 4,
+  },
+  fiveDayScrollContent: {
+    gap: 8,
+    paddingHorizontal: 2,
+    paddingVertical: 2,
+  },
+  fiveDayCard: {
+    width: 96,
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    borderRadius: 12,
+    alignItems: 'center',
+    gap: 3,
+  },
+  fiveDayTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+  },
+  fiveDayDayText: {
+    fontSize: 12.5,
+  },
+  fiveDayMoonIcon: {
+    fontSize: 14,
+  },
+  fiveDayDateText: {
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  fiveDayTideBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    marginTop: 2,
+  },
+  fiveDayTideText: {
+    fontSize: 10,
     fontWeight: '800',
   },
 });

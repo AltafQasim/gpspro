@@ -1,6 +1,7 @@
 /**
  * High-precision marine astronomical calculations for Moon, Sun, and Solunar Fishing.
- * Computes exact moon phase, illumination percentage, moon age, distance, and rise/set timings.
+ * Computes exact moon phase, illumination percentage, moon age, distance, and rise/set timings
+ * using standard NOAA Solar and Meeus Lunar ephemeris algorithms calibrated for coastal waters.
  */
 
 export type MoonPhaseInfo = {
@@ -47,34 +48,175 @@ export type SunTimingInfo = {
   sunAngleDeg: number;
 };
 
-// Known New Moon reference epoch: Jan 11, 2024, 11:57 UTC
-const SYNODIC_MONTH = 29.530588853;
-const KNOWN_NEW_MOON = new Date('2024-01-11T11:57:00Z').getTime();
+// --- Astronomical Helper Functions ---
+
+function getJulianDate(date: Date): number {
+  return date.getTime() / 86400000 + 2440587.5;
+}
+
+function normDeg(deg: number): number {
+  return ((deg % 360) + 360) % 360;
+}
+
+function degToRad(deg: number): number {
+  return (deg * Math.PI) / 180;
+}
+
+function radToDeg(rad: number): number {
+  return (rad * 180) / Math.PI;
+}
+
+function formatHourMin(hourVal: number): string {
+  let normalized = hourVal % 24;
+  if (normalized < 0) normalized += 24;
+  const totalMin = Math.round(normalized * 60) % 1440;
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
 
 /**
- * Calculates accurate astronomical moon parameters for any given Date.
+ * Calculates high-accuracy astronomical moon parameters, phase, and rise/set for any given Date and location.
+ * Uses Meeus lunar position equations and IST local solar meridian transit.
  */
-export function getMoonPhaseDetails(targetDate: Date = new Date()): MoonPhaseInfo {
-  const timeMs = targetDate.getTime();
-  const diffDays = (timeMs - KNOWN_NEW_MOON) / (1000 * 60 * 60 * 24);
-  const cyclePosition = ((diffDays % SYNODIC_MONTH) + SYNODIC_MONTH) % SYNODIC_MONTH;
-  const phase = cyclePosition / SYNODIC_MONTH; // 0.0 to 1.0
+export function getMoonPhaseDetails(
+  targetDate: Date = new Date(),
+  lat: number = 20.9,
+  lon: number = 70.36
+): MoonPhaseInfo {
+  const y = targetDate.getFullYear();
+  const m = targetDate.getMonth();
+  const d = targetDate.getDate();
 
-  // Illumination calculation: (1 - cos(2*pi*phase)) / 2
-  const illuminationFraction = (1 - Math.cos(2 * Math.PI * phase)) / 2;
-  const illumination = Math.round(illuminationFraction * 100);
+  // Noon local time in IST (~06:30 UTC)
+  const refDateUtc = new Date(Date.UTC(y, m, d, 6, 30, 0));
+  const jd = getJulianDate(refDateUtc);
+  const T = (jd - 2451545.0) / 36525.0;
 
-  // Apparent distance based on lunar orbital eccentricity (approx 27.55 days anomalistic month)
-  const anomalisticCycle = (diffDays % 27.55455) / 27.55455;
-  const distanceKm = Math.round(384400 - 21000 * Math.cos(2 * Math.PI * anomalisticCycle));
+  // Fundamental Lunar Arguments (Meeus Chap 47)
+  const Lp = normDeg(218.3164477 + 481267.88123421 * T);
+  const D = normDeg(297.8501921 + 445267.1114034 * T);
+  const M = normDeg(357.5291092 + 35999.0502909 * T);
+  const Mp = normDeg(134.9633964 + 477198.8675055 * T);
+  const F = normDeg(93.272095 + 483202.0175233 * T);
 
-  // Dynamic Visual Scaling Factor ("bada chota hona chahiye"):
-  // Perigee + Full moon = Supermoon effect (size up to 1.18x), New moon / apogee = 0.88x
+  const Dr = degToRad(D);
+  const Mr = degToRad(M);
+  const Mpr = degToRad(Mp);
+  const Fr = degToRad(F);
+
+  // Periodic perturbations in Moon's longitude (degrees)
+  const deltaL =
+    6.288774 * Math.sin(Mpr) +
+    1.274027 * Math.sin(2 * Dr - Mpr) +
+    0.658309 * Math.sin(2 * Dr) +
+    0.213618 * Math.sin(2 * Mpr) -
+    0.185116 * Math.sin(Mr) -
+    0.114332 * Math.sin(2 * Fr) +
+    0.058793 * Math.sin(2 * Dr - 2 * Mpr) +
+    0.057066 * Math.sin(2 * Dr - Mr - Mpr) +
+    0.053322 * Math.sin(2 * Dr + Mpr) +
+    0.046019 * Math.sin(2 * Dr - Mr) -
+    0.03472 * Math.sin(Dr) -
+    0.030465 * Math.sin(Mr + Mpr) +
+    0.015327 * Math.sin(2 * Dr - 2 * Fr);
+
+  const moonEclLong = normDeg(Lp + deltaL);
+
+  // Periodic perturbations in Moon's latitude (degrees)
+  const deltaB =
+    5.128154 * Math.sin(Fr) +
+    0.280602 * Math.sin(Mpr + Fr) +
+    0.277693 * Math.sin(Mpr - Fr) +
+    0.173237 * Math.sin(2 * Dr - Fr) +
+    0.055413 * Math.sin(2 * Dr - Mpr + Fr) +
+    0.046271 * Math.sin(2 * Dr - Mpr - Fr) +
+    0.032573 * Math.sin(2 * Dr + Fr);
+
+  const moonEclLat = deltaB;
+
+  // Earth-Moon distance in kilometers
+  const distanceKm = Math.round(
+    385000.56 -
+      20905.355 * Math.cos(Mpr) -
+      3699.111 * Math.cos(2 * Dr - Mpr) -
+      2955.968 * Math.cos(2 * Dr) -
+      569.925 * Math.cos(2 * Mpr) +
+      48.888 * Math.cos(Mr) -
+      3.149 * Math.cos(2 * Fr)
+  );
+
+  // Obliquity of the Ecliptic
+  const eps = 23.439291 - 0.0130042 * T;
+  const epsRad = degToRad(eps);
+  const lRad = degToRad(moonEclLong);
+  const bRad = degToRad(moonEclLat);
+
+  // Convert Moon coordinates to Right Ascension & Declination
+  const sinDec =
+    Math.sin(bRad) * Math.cos(epsRad) +
+    Math.cos(bRad) * Math.sin(epsRad) * Math.sin(lRad);
+  const moonDecRad = Math.asin(Math.max(-1, Math.min(1, sinDec)));
+
+  const yRa =
+    Math.cos(bRad) * Math.sin(lRad) * Math.cos(epsRad) -
+    Math.sin(bRad) * Math.sin(epsRad);
+  const xRa = Math.cos(bRad) * Math.cos(lRad);
+  const moonRaDeg = normDeg(radToDeg(Math.atan2(yRa, xRa)));
+
+  // Sun Ecliptic Longitude and RA
+  const L0 = normDeg(280.46646 + T * 36000.76983);
+  const Msun = normDeg(357.52911 + T * 35999.05029);
+  const sunTrueLong = L0 + 1.914602 * Math.sin(degToRad(Msun));
+  const sunRaDeg = normDeg(
+    radToDeg(
+      Math.atan2(
+        Math.cos(epsRad) * Math.sin(degToRad(sunTrueLong)),
+        Math.cos(degToRad(sunTrueLong))
+      )
+    )
+  );
+
+  // Phase & Illumination
+  const phaseAngle = normDeg(moonEclLong - sunTrueLong);
+  const phase = phaseAngle / 360; // 0.0 to 1.0
+  const illumination = Math.round(((1 - Math.cos(degToRad(phaseAngle))) / 2) * 100);
+  const moonAgeDays = parseFloat((phase * 29.530588853).toFixed(1));
+  const isWaxing = phase < 0.5;
+
+  // Dynamic Visual Scaling Factor
   const distanceScale = 1 + (384400 - distanceKm) / 70000;
-  const phaseGlowScale = 0.88 + illuminationFraction * 0.26;
+  const phaseGlowScale = 0.88 + (illumination / 100) * 0.26;
   const sizeScale = parseFloat((distanceScale * phaseGlowScale).toFixed(2));
 
-  const isWaxing = phase < 0.5;
+  // Solar Noon in IST for this observer's longitude (Standard meridian = 82.5° E)
+  const deltaLonMin = (82.5 - lon) * 4;
+  const eotMin =
+    4 *
+    radToDeg(
+      0.043 * Math.sin(2 * degToRad(L0)) - 0.033 * Math.sin(degToRad(Msun))
+    );
+  const solarNoonHour = 12 + (deltaLonMin - eotMin) / 60;
+
+  // Lunar transit (overhead) in IST:
+  // Right ascension difference (Moon RA - Sun RA) gives the time offset from Solar Noon
+  const raDiffHours = normDeg(moonRaDeg - sunRaDeg) / 15;
+  const transitHour = ((solarNoonHour + raDiffHours) % 24 + 24) % 24;
+  const underfootHour = ((transitHour + 12.42) % 24 + 24) % 24;
+
+  // Moon Hour Angle for Rise / Set:
+  // Moon zenith for rise/set ~ 89.875° (accounting for 57' parallax and 34' refraction)
+  const latRad = degToRad(lat);
+  const cosZenithMoon = Math.cos(degToRad(89.875));
+  const cosHAMoon =
+    (cosZenithMoon - Math.sin(latRad) * Math.sin(moonDecRad)) /
+    (Math.cos(latRad) * Math.cos(moonDecRad));
+  const haMoonDeg = radToDeg(Math.acos(Math.max(-1, Math.min(1, cosHAMoon))));
+  const haMoonHours = haMoonDeg / 15;
+
+  // Moon advances ~13.2° per day eastward, slightly extending the daily hour angle interval
+  const moonriseHour = (((transitHour - haMoonHours * 0.98) % 24) + 24) % 24;
+  const moonsetHour = (((transitHour + haMoonHours * 1.035) % 24) + 24) % 24;
 
   let phaseKey: MoonPhaseInfo['phaseKey'] = 'phase_new';
   let phaseNameEn = 'New Moon';
@@ -124,8 +266,6 @@ export function getMoonPhaseDetails(targetDate: Date = new Date()): MoonPhaseInf
   }
 
   // Tidal Strength & Marine Currents
-  // Spring Tides occur around Full Moon (0.5) and New Moon (0.0 / 1.0)
-  // Neap Tides occur around Quarters (0.25, 0.75)
   let tideType: MoonPhaseInfo['tideType'] = 'moderate';
   let tideTitleEn = 'Moderate Coastal Currents';
   let tideTitleGu = 'સામાન્ય ભરતી-ઓટ (મધ્યમ કરંટ)';
@@ -158,18 +298,6 @@ export function getMoonPhaseDetails(targetDate: Date = new Date()): MoonPhaseInf
       'पानी की हलचल शांत रहेगी। बॉटम फिशिंग और लंगर डालने के लिए बहुत अच्छा समय।';
   }
 
-  // Realistic rise/set offsets based on moon age
-  const baseRiseHour = (6 + cyclePosition * 0.8) % 24;
-  const baseSetHour = (baseRiseHour + 12.5) % 24;
-  const baseOverheadHour = (baseRiseHour + 6.2) % 24;
-  const baseUnderfootHour = (baseOverheadHour + 12) % 24;
-
-  const formatHourMin = (h: number) => {
-    const hours = Math.floor(h);
-    const mins = Math.floor((h - hours) * 60);
-    return `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
-  };
-
   return {
     phase,
     phaseKey,
@@ -177,7 +305,7 @@ export function getMoonPhaseDetails(targetDate: Date = new Date()): MoonPhaseInf
     phaseNameGu,
     phaseNameHi,
     illumination,
-    moonAgeDays: parseFloat(cyclePosition.toFixed(1)),
+    moonAgeDays,
     distanceKm,
     sizeScale,
     isWaxing,
@@ -188,50 +316,112 @@ export function getMoonPhaseDetails(targetDate: Date = new Date()): MoonPhaseInf
     tideDescEn,
     tideDescGu,
     tideDescHi,
-    moonrise: formatHourMin(baseRiseHour),
-    moonset: formatHourMin(baseSetHour),
-    overhead: formatHourMin(baseOverheadHour),
-    underfoot: formatHourMin(baseUnderfootHour),
+    moonrise: formatHourMin(moonriseHour),
+    moonset: formatHourMin(moonsetHour),
+    overhead: formatHourMin(transitHour),
+    underfoot: formatHourMin(underfootHour),
   };
 }
 
 /**
- * Calculates Sun, dawn, dusk, and golden hour timings for Indian coastal waters.
+ * Calculates high-precision Sun, dawn, dusk, solar noon, and golden hour timings
+ * using the official NOAA Solar Calculation algorithm for any coastal latitude and longitude.
  */
-export function getSunTimingDetails(targetDate: Date = new Date()): SunTimingInfo {
-  // Day of year calculation for solar declination
-  const start = new Date(targetDate.getFullYear(), 0, 0);
-  const diff = targetDate.getTime() - start.getTime();
-  const dayOfYear = Math.floor(diff / (1000 * 60 * 60 * 24));
+export function getSunTimingDetails(
+  targetDate: Date = new Date(),
+  lat: number = 20.9,
+  lon: number = 70.36
+): SunTimingInfo {
+  const y = targetDate.getFullYear();
+  const m = targetDate.getMonth();
+  const d = targetDate.getDate();
 
-  // Solar declination approximation
-  const declination = 23.45 * Math.sin(((360 / 365) * (dayOfYear - 81) * Math.PI) / 180);
+  // Noon local time in IST (~06:30 UTC)
+  const noonUtc = new Date(Date.UTC(y, m, d, 6, 30, 0));
+  const jd = getJulianDate(noonUtc);
+  const T = (jd - 2451545.0) / 36525.0;
 
-  // Approximate coastal India latitude ~ 21 deg (Veraval / Gujarat Coast)
-  const lat = 21.0;
-  const cosHour = -Math.tan((lat * Math.PI) / 180) * Math.tan((declination * Math.PI) / 180);
-  const hourAngleDeg = Math.acos(Math.max(-1, Math.min(1, cosHour))) * (180 / Math.PI);
+  // Sun geometric mean longitude
+  const L0 = normDeg(280.46646 + T * (36000.76983 + T * 0.0003032));
 
-  const halfDayHours = hourAngleDeg / 15;
-  const solarNoonHour = 12.55; // 12:33 IST approximate for 70 deg E longitude
+  // Sun mean anomaly
+  const M = normDeg(357.52911 + T * (35999.05029 - 0.0001537 * T));
+  const Mrad = degToRad(M);
+
+  // Earth orbit eccentricity
+  const e = 0.016708634 - T * (0.000042037 + 0.0000001267 * T);
+
+  // Sun equation of center
+  const C =
+    Math.sin(Mrad) * (1.914602 - T * (0.004817 + 0.000014 * T)) +
+    Math.sin(2 * Mrad) * (0.019993 - 0.000101 * T) +
+    Math.sin(3 * Mrad) * 0.000289;
+
+  // Sun true longitude
+  const sunTrueLong = L0 + C;
+
+  // Sun apparent longitude
+  const omega = 125.04 - 1934.136 * T;
+  const lambda = sunTrueLong - 0.00569 - 0.00478 * Math.sin(degToRad(omega));
+  const lambdaRad = degToRad(lambda);
+
+  // Mean obliquity of ecliptic
+  const eps0 =
+    23 + (26 + (21.448 - T * (46.815 + T * (0.00059 - T * 0.001813))) / 60) / 60;
+  const eps = eps0 + 0.00256 * Math.cos(degToRad(omega));
+  const epsRad = degToRad(eps);
+
+  // Solar declination
+  const sinDec = Math.sin(epsRad) * Math.sin(lambdaRad);
+  const declinationRad = Math.asin(Math.max(-1, Math.min(1, sinDec)));
+  const declinationDeg = radToDeg(declinationRad);
+
+  // Equation of Time (minutes)
+  const yTan = Math.tan(epsRad / 2) * Math.tan(epsRad / 2);
+  const L0Rad = degToRad(L0);
+  const eotMin =
+    4 *
+    radToDeg(
+      yTan * Math.sin(2 * L0Rad) -
+        2 * e * Math.sin(Mrad) +
+        4 * e * yTan * Math.sin(Mrad) * Math.cos(2 * L0Rad) -
+        0.5 * yTan * yTan * Math.sin(4 * L0Rad) -
+        1.25 * e * e * Math.sin(2 * Mrad)
+    );
+
+  // Local Solar Noon in Indian Standard Time (UTC+5.5, reference longitude 82.5° E)
+  const deltaLonMin = (82.5 - lon) * 4;
+  const solarNoonHour = 12 + (deltaLonMin - eotMin) / 60;
+
+  // Hour angle for sunrise / sunset (zenith = 90.833° for atmospheric refraction & solar disc)
+  const latRad = degToRad(lat);
+  const cosZenithSun = Math.cos(degToRad(90.833));
+  const cosHA0 =
+    (cosZenithSun - Math.sin(latRad) * Math.sin(declinationRad)) /
+    (Math.cos(latRad) * Math.cos(declinationRad));
+  const ha0Deg = radToDeg(Math.acos(Math.max(-1, Math.min(1, cosHA0))));
+  const halfDayHours = ha0Deg / 15;
 
   const sunriseHour = solarNoonHour - halfDayHours;
   const sunsetHour = solarNoonHour + halfDayHours;
-  const dawnHour = sunriseHour - 0.42; // ~25 min twilight
-  const duskHour = sunsetHour + 0.42;
+
+  // Civil Twilight (Dawn / Dusk, zenith = 96.0°)
+  const cosZenithCivil = Math.cos(degToRad(96.0));
+  const cosHACivil =
+    (cosZenithCivil - Math.sin(latRad) * Math.sin(declinationRad)) /
+    (Math.cos(latRad) * Math.cos(declinationRad));
+  const haCivilDeg = radToDeg(Math.acos(Math.max(-1, Math.min(1, cosHACivil))));
+  const civilHalfHours = haCivilDeg / 15;
+
+  const dawnHour = solarNoonHour - civilHalfHours;
+  const duskHour = solarNoonHour + civilHalfHours;
   const goldenHour = sunsetHour - 0.75; // 45 min before sunset
 
   const daylightTotalHours = halfDayHours * 2;
   const daylightHours = Math.floor(daylightTotalHours);
   const daylightMinutes = Math.floor((daylightTotalHours - daylightHours) * 60);
 
-  const formatHourMin = (h: number) => {
-    const hours = Math.floor(h);
-    const mins = Math.floor((h - hours) * 60);
-    return `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
-  };
-
-  const sunAngleDeg = Math.round(90 - Math.abs(lat - declination));
+  const sunAngleDeg = Math.round(90 - Math.abs(lat - declinationDeg));
 
   return {
     sunrise: formatHourMin(sunriseHour),

@@ -219,20 +219,21 @@ class MarineVoiceService {
     if (!this.isEnabled) return;
     const activeLang = options.lang || this.language;
 
+    const windKmh = Math.round(options.windKnots * 1.852);
     let msg = '';
     if (activeLang === 'Gujarati') {
       const portName = options.portNameGu || options.portNameEn;
       const cond = options.conditionGu || options.conditionEn;
       const adv = options.advisoryGu ? ` ${options.advisoryGu}` : '';
-      msg = `${portName} દરિયાઈ હવામાન અપડેટ. હાલનું તાપમાન ${options.temp} ડિગ્રી સેલ્સિયસ. પવનની ઝડપ ${options.windKnots} નોટ્સ, દિશા ${options.windDir}. મોજાંની ઊંચાઈ ${options.waveMeters} મીટર. દરિયાની સ્થિતિ: ${cond}.${adv}`;
+      msg = `${portName} દરિયાઈ હવામાન અપડેટ. હાલનું તાપમાન ${options.temp} ડિગ્રી સેલ્સિયસ. પવનની ઝડપ ${windKmh} કિલોમીટર પ્રતિ કલાક (${options.windKnots} નોટ્સ), દિશા ${options.windDir}. મોજાંની ઊંચાઈ ${options.waveMeters} મીટર. દરિયાની સ્થિતિ: ${cond}.${adv}`;
     } else if (activeLang === 'Hindi') {
       const portName = options.portNameHi || options.portNameEn;
       const cond = options.conditionHi || options.conditionEn;
       const adv = options.advisoryHi ? ` ${options.advisoryHi}` : '';
-      msg = `${portName} समुद्री मौसम अपडेट। वर्तमान तापमान ${options.temp} डिग्री सेल्सियस। हवा की गति ${options.windKnots} नॉट्स, दिशा ${options.windDir}। लहरों की ऊंचाई ${options.waveMeters} मीटर। समुद्र की स्थिति: ${cond}।${adv}`;
+      msg = `${portName} समुद्री मौसम अपडेट। वर्तमान तापमान ${options.temp} डिग्री सेल्सियस। हवा की गति ${windKmh} किलोमीटर प्रति घंटा (${options.windKnots} नॉट्स), दिशा ${options.windDir}। लहरों की ऊंचाई ${options.waveMeters} मीटर। समुद्र की स्थिति: ${cond}।${adv}`;
     } else {
       const adv = options.advisoryEn ? ` ${options.advisoryEn}` : '';
-      msg = `Marine weather update for ${options.portNameEn}. Current temperature ${options.temp} degrees Celsius. Wind speed ${options.windKnots} knots from ${options.windDir}. Wave height ${options.waveMeters} meters. Condition: ${options.conditionEn}.${adv}`;
+      msg = `Marine weather update for ${options.portNameEn}. Current temperature ${options.temp} degrees Celsius. Wind speed ${windKmh} kilometers per hour (${options.windKnots} knots) from ${options.windDir}. Wave height ${options.waveMeters} meters. Condition: ${options.conditionEn}.${adv}`;
     }
 
     this.speak(msg, activeLang);

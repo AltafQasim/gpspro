@@ -33,21 +33,21 @@ export const FeatureModal: React.FC<FeatureModalProps> = ({
 
   const colors = nightMode
     ? {
-        bg: '#1A1C23',
-        card: '#252836',
-        text: '#ECEFF1',
-        subtext: '#90A4AE',
-        accent: '#00E676',
-        border: 'rgba(255, 82, 82, 0.3)',
-      }
+      bg: '#1A1C23',
+      card: '#252836',
+      text: '#ECEFF1',
+      subtext: '#90A4AE',
+      accent: '#00E676',
+      border: 'rgba(255, 82, 82, 0.3)',
+    }
     : {
-        bg: '#FFFFFF',
-        card: '#F4F6F9',
-        text: '#212121',
-        subtext: '#546E7A',
-        accent: '#2979FF',
-        border: '#E0E0E0',
-      };
+      bg: '#FFFFFF',
+      card: '#F4F6F9',
+      text: '#212121',
+      subtext: '#546E7A',
+      accent: '#2979FF',
+      border: '#E0E0E0',
+    };
 
   const renderContent = () => {
     switch (featureId) {
@@ -234,7 +234,7 @@ export const FeatureModal: React.FC<FeatureModalProps> = ({
             <View style={styles.metricGrid}>
               <View style={[styles.metricCard, { backgroundColor: colors.card }]}>
                 <Text style={[styles.metricLabel, { color: colors.subtext }]}>Wind Speed</Text>
-                <Text style={[styles.metricValue, { color: colors.text }]}>11 kn NW</Text>
+                <Text style={[styles.metricValue, { color: colors.text }]}>20 km/h NW (11 kn)</Text>
               </View>
               <View style={[styles.metricCard, { backgroundColor: colors.card }]}>
                 <Text style={[styles.metricLabel, { color: colors.subtext }]}>Wave Height</Text>
@@ -396,13 +396,6 @@ export const FeatureModal: React.FC<FeatureModalProps> = ({
                 showsVerticalScrollIndicator={false}
                 contentContainerStyle={styles.scrollContent}>
                 {renderContent()}
-
-                {/* Subtext indicating ready for dedicated screens */}
-                <View style={[styles.nextScreenHint, { backgroundColor: colors.card }]}>
-                  <Text style={[styles.hintText, { color: colors.subtext }]}>
-                    💡 <Text style={{ fontWeight: '700' }}>Note for developer:</Text> Home page preview is live. Send the next dedicated page design anytime to replace this sheet with the full screen!
-                  </Text>
-                </View>
               </ScrollView>
             </View>
           </TouchableWithoutFeedback>

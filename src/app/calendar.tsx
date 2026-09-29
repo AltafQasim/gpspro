@@ -667,8 +667,11 @@ export default function CalendarScreen() {
   const [language, setLanguage] = useState<SpeechLanguage>(() => SettingsStore.getSettings().ttsLang);
   const [voiceEnabled, setVoiceEnabled] = useState<boolean>(() => SettingsStore.getSettings().voiceAnnounce);
 
-  // Selected Day State: Default to Poonam (Day 11 - 100% Full Moon) so the detailed moon is immediately visible in full glory
-  const [selectedDay, setSelectedDay] = useState<number>(11);
+  // Selected Day State: Default to today's date so the current day is immediately visible
+  const [selectedDay, setSelectedDay] = useState<number>(() => {
+    const today = new Date();
+    return Math.min(30, Math.max(1, today.getDate()));
+  });
   const [moonImgUri, setMoonImgUri] = useState<string>(PRIMARY_MOON_IMAGE_URI);
 
   // Selected Port
@@ -682,6 +685,8 @@ export default function CalendarScreen() {
 
   // Live Voice Announcement Subtitle Bar
   const [liveAnnouncement, setLiveAnnouncement] = useState<string>('');
+
+  const todayDayNum = useMemo(() => new Date().getDate(), []);
 
   useEffect(() => {
     const unsubSettings = SettingsStore.subscribe((s) => {
@@ -711,8 +716,16 @@ export default function CalendarScreen() {
 
   // High-precision Marine Astronomical calculation for the selected date
   const selectedDateObj = new Date(2026, 8, selectedDay, 12, 0, 0);
-  const astroMoon: MoonPhaseInfo = getMoonPhaseDetails(selectedDateObj);
-  const astroSun: SunTimingInfo = getSunTimingDetails(selectedDateObj);
+  const astroMoon: MoonPhaseInfo = getMoonPhaseDetails(
+    selectedDateObj,
+    selectedPort.lat,
+    selectedPort.lon
+  );
+  const astroSun: SunTimingInfo = getSunTimingDetails(
+    selectedDateObj,
+    selectedPort.lat,
+    selectedPort.lon
+  );
 
   const currentPhase = astroMoon.phase;
   const isWaxing = astroMoon.isWaxing;
@@ -727,7 +740,11 @@ export default function CalendarScreen() {
 
     if (voiceEnabled) {
       const dayDate = new Date(2026, 8, day, 12, 0, 0);
-      const dayAstro = getMoonPhaseDetails(dayDate);
+      const dayAstro = getMoonPhaseDetails(
+        dayDate,
+        selectedPort.lat,
+        selectedPort.lon
+      );
       VoiceService.announceCalendarDate({
         day,
         tithiName: dayItem.tithiName,
@@ -800,9 +817,18 @@ export default function CalendarScreen() {
   };
 
   const getWeekDay = (d: number) => {
-    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const idx = (d + 1) % 7;
-    return days[idx];
+    const dateObj = new Date(2026, 8, d, 12, 0, 0);
+    const dayIdx = dateObj.getDay();
+    if (language === 'Gujarati') {
+      const daysGu = ['રવિવાર', 'સોમવાર', 'મંગળવાર', 'બુધવાર', 'ગુરુવાર', 'શુક્રવાર', 'શનિવાર'];
+      return daysGu[dayIdx];
+    }
+    if (language === 'Hindi') {
+      const daysHi = ['रविवार', 'सोमवार', 'मंगलवार', 'बुधवार', 'गुरुवार', 'शुक्रवार', 'शनिवार'];
+      return daysHi[dayIdx];
+    }
+    const daysEn = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    return daysEn[dayIdx];
   };
 
   // Accurate Port Adjusted Astronomical Times based on dynamic calculations
@@ -966,6 +992,7 @@ export default function CalendarScreen() {
               }
 
               const isSelected = selectedDay === item.day;
+              const isToday = item.day === todayDayNum;
               const isPoonam = item.day === 11;
               const isAmas = item.day === 26;
               const isBaras = item.day === 8 || item.day === 23;
@@ -983,14 +1010,24 @@ export default function CalendarScreen() {
                     isAmas && styles.dayCellAmas,
                     isBaras && styles.dayCellBaras,
                     isChaudas && styles.dayCellChaudas,
+                    isToday && styles.dayCellToday,
                     isSelected && styles.dayCellSelected,
                   ]}>
+                  {/* Today Badge */}
+                  {isToday && (
+                    <View style={styles.todayPill}>
+                      <Text style={styles.todayPillText}>
+                        {language === 'Gujarati' ? 'આજે' : language === 'Hindi' ? 'आज' : 'TODAY'}
+                      </Text>
+                    </View>
+                  )}
+
                   {/* English Date */}
                   <Text
                     style={[
                       styles.dayEnglishNum,
-                      { color: colors.textPrimary },
-                      (isPoonam || isBaras || isChaudas || isSelected) && styles.dayTextBold,
+                      { color: isToday && !isSelected ? '#00E5FF' : colors.textPrimary },
+                      (isPoonam || isBaras || isChaudas || isSelected || isToday) && styles.dayTextBold,
                     ]}>
                     {item.day.toString().padStart(2, '0')}
                   </Text>
@@ -1022,6 +1059,12 @@ export default function CalendarScreen() {
           {/* Calendar Legend Bar */}
           <View style={styles.legendRow}>
             <View style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: '#00E5FF' }]} />
+              <Text style={[styles.legendText, { color: colors.textSecondary }]}>
+                {language === 'Gujarati' ? 'આજે (Today)' : language === 'Hindi' ? 'आज (Today)' : 'Today'}
+              </Text>
+            </View>
+            <View style={styles.legendItem}>
               <View style={[styles.legendDot, { backgroundColor: '#F59E0B' }]} />
               <Text style={[styles.legendText, { color: colors.textSecondary }]}>Poonam / Baras</Text>
             </View>
@@ -1042,7 +1085,12 @@ export default function CalendarScreen() {
           <View style={styles.detailHeaderRow}>
             <View style={styles.detailHeaderLeft}>
               <Text style={[styles.selectedDateTitle, { color: colors.textPrimary }]}>
-                2026-09-{selectedDay.toString().padStart(2, '0')} ({getWeekDay(selectedDay)})
+                {`2026-09-${selectedDay.toString().padStart(2, '0')}`} ({getWeekDay(selectedDay)})
+                {selectedDay === todayDayNum && (
+                  <Text style={{ color: '#00E5FF', fontWeight: '900' }}>
+                    {' '}• {language === 'Gujarati' ? 'આજે' : language === 'Hindi' ? 'आज' : 'Today'}
+                  </Text>
+                )}
               </Text>
               <Text style={[styles.tithiSubTitle, { color: colors.accentBlue }]}>
                 Tithi: {currentDayData.tithiNum} ({currentDayData.tithiName}) •{' '}
@@ -1693,6 +1741,28 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 4,
     elevation: 3,
+  },
+  dayCellToday: {
+    borderColor: '#00E5FF',
+    borderWidth: 2,
+    shadowColor: '#00E5FF',
+    shadowOpacity: 0.4,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  todayPill: {
+    position: 'absolute',
+    top: -5,
+    backgroundColor: '#00E5FF',
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 4,
+    zIndex: 3,
+  },
+  todayPillText: {
+    fontSize: 7,
+    fontWeight: '900',
+    color: '#0A0E17',
   },
   dayCellPoonam: {
     backgroundColor: '#FEF3C7',

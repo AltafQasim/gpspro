@@ -64,11 +64,62 @@ export function calculateNavDistanceAndBearing(
   };
 }
 
+// Calculate distance in Kilometers between two lat/lon coordinates (Haversine formula)
+export function calculateDistanceKm(
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number
+): number {
+  const R = 6371; // Earth radius in km
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const radLat1 = (lat1 * Math.PI) / 180;
+  const radLat2 = (lat2 * Math.PI) / 180;
+
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(radLat1) * Math.cos(radLat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return parseFloat((R * c).toFixed(1));
+}
+
 export class GpsService {
   private static posSubscription: Location.LocationSubscription | null = null;
   private static headingSubscription: Location.LocationSubscription | null = null;
   private static webOrientationHandler: any = null;
   private static ecoMode: boolean = false;
+  private static lastTelemetry: LocationTelemetry | null = null;
+
+  static getLastTelemetry(): LocationTelemetry | null {
+    return this.lastTelemetry;
+  }
+
+  static async getCurrentLocationAsync(): Promise<LocationTelemetry | null> {
+    if (this.lastTelemetry) return this.lastTelemetry;
+    try {
+      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      const lat = loc.coords.latitude;
+      const lon = loc.coords.longitude;
+      const speedKnots =
+        loc.coords.speed !== null && loc.coords.speed >= 0
+          ? parseFloat((loc.coords.speed * 1.94384).toFixed(1))
+          : 0;
+      const tele: LocationTelemetry = {
+        latitude: lat,
+        longitude: lon,
+        speedKnots,
+        altitude: loc.coords.altitude !== null ? Math.round(loc.coords.altitude) : undefined,
+        accuracy: loc.coords.accuracy !== null ? Math.round(loc.coords.accuracy) : undefined,
+        latFormatted: formatNauticalLat(lat),
+        lonFormatted: formatNauticalLon(lon),
+      };
+      this.lastTelemetry = tele;
+      return tele;
+    } catch {
+      return null;
+    }
+  }
 
   // Sea Eco Mode / Battery Optimization
   static setEcoMode(enabled: boolean) {
@@ -126,7 +177,7 @@ export class GpsService {
           const altitude = loc.coords.altitude !== null ? Math.round(loc.coords.altitude) : undefined;
           const accuracy = loc.coords.accuracy !== null ? Math.round(loc.coords.accuracy) : undefined;
 
-          callback({
+          const telemetry: LocationTelemetry = {
             latitude: lat,
             longitude: lon,
             speedKnots,
@@ -134,7 +185,9 @@ export class GpsService {
             accuracy,
             latFormatted: formatNauticalLat(lat),
             lonFormatted: formatNauticalLon(lon),
-          });
+          };
+          this.lastTelemetry = telemetry;
+          callback(telemetry);
         }
       );
     } catch {
@@ -149,8 +202,7 @@ export class GpsService {
                 ? parseFloat((pos.coords.speed * 1.94384).toFixed(1))
                 : 0;
             const altitude = pos.coords.altitude !== null ? Math.round(pos.coords.altitude) : undefined;
-            const accuracy = pos.coords.accuracy !== null ? Math.round(pos.coords.accuracy) : undefined;
-            callback({
+            const telemetry: LocationTelemetry = {
               latitude: lat,
               longitude: lon,
               speedKnots,
@@ -158,7 +210,9 @@ export class GpsService {
               accuracy,
               latFormatted: formatNauticalLat(lat),
               lonFormatted: formatNauticalLon(lon),
-            });
+            };
+            this.lastTelemetry = telemetry;
+            callback(telemetry);
           },
           undefined,
           { enableHighAccuracy: !this.ecoMode }

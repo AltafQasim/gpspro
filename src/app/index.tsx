@@ -1,13 +1,16 @@
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  Modal,
   Platform,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
+  TouchableWithoutFeedback,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -23,6 +26,11 @@ import { MarineFeatureId, Satellite } from '@/components/marine/types';
 import { AuthStore } from '@/services/authStore';
 import { DeviceStatusService } from '@/services/deviceStatusService';
 import { GpsService, LocationTelemetry } from '@/services/gpsService';
+import {
+  calculateDistanceKm,
+  MARINE_PORTS_DATABASE,
+  MarinePortInfo,
+} from '@/services/marineData';
 import { SettingsStore } from '@/services/settingsStore';
 import { SubscriptionStore } from '@/services/subscriptionStore';
 
@@ -32,6 +40,11 @@ export default function MarineHomeScreen() {
   const [activeModal, setActiveModal] = useState<MarineFeatureId | 'satellite' | 'coordinates' | null>(null);
   const [modalTitle, setModalTitle] = useState<string>('');
   const [selectedSat, setSelectedSat] = useState<Satellite | null>(null);
+
+  // Global Active Port Selection State (Synchronized across all screens)
+  const [selectedPortId, setSelectedPortId] = useState<string>(() => SettingsStore.getSelectedPortId());
+  const [showPortModal, setShowPortModal] = useState<boolean>(false);
+  const [portSearchText, setPortSearchText] = useState<string>('');
 
   // Paywall & Subscription Lockout State
   const [isAccessAllowed, setIsAccessAllowed] = useState<boolean>(() => SubscriptionStore.isAccessAllowed());
@@ -83,13 +96,56 @@ export default function MarineHomeScreen() {
   const [signalBars, setSignalBars] = useState<number>(5);
   const [networkType, setNetworkType] = useState<string>('4G LTE');
 
+  // Active Selected Marine Port
+  const activePort: MarinePortInfo = useMemo(() => {
+    return (
+      MARINE_PORTS_DATABASE.find((p) => p.id === selectedPortId) ||
+      MARINE_PORTS_DATABASE[0]
+    );
+  }, [selectedPortId]);
+
+  // Filtered & Distance-Sorted Ports List for the Modal
+  const filteredAndSortedPorts = useMemo(() => {
+    const query = portSearchText.trim().toLowerCase();
+    const list = MARINE_PORTS_DATABASE.map((p) => {
+      const distanceKm = latestCoordsRef.current
+        ? calculateDistanceKm(
+            latestCoordsRef.current.lat,
+            latestCoordsRef.current.lon,
+            p.lat,
+            p.lon
+          )
+        : null;
+      return { ...p, distanceKm };
+    });
+
+    const filtered = query
+      ? list.filter(
+          (p) =>
+            p.name.toLowerCase().includes(query) ||
+            p.nameGu.toLowerCase().includes(query) ||
+            (p.nameHi && p.nameHi.toLowerCase().includes(query)) ||
+            p.region.toLowerCase().includes(query) ||
+            p.regionGu.toLowerCase().includes(query) ||
+            p.id.toLowerCase().includes(query)
+        )
+      : list;
+
+    if (latestCoordsRef.current) {
+      return [...filtered].sort((a, b) => (a.distanceKm ?? 99999) - (b.distanceKm ?? 99999));
+    }
+    return filtered;
+  }, [portSearchText, hasGpsFix]);
+
   // Real Hardware Listeners for Battery, Network, Location & Compass Gyro
   useEffect(() => {
-    // 1. Initialize Real Device Status (Battery & Network)
     DeviceStatusService.init();
 
-    const unsubSettings = SettingsStore.subscribe(() => {
+    const unsubSettings = SettingsStore.subscribe((s) => {
       setNightMode(SettingsStore.isNightMode());
+      if (s.selectedPortId && s.selectedPortId !== selectedPortId) {
+        setSelectedPortId(s.selectedPortId);
+      }
       if (latestCoordsRef.current) {
         const c = SettingsStore.formatCoordinates(
           latestCoordsRef.current.lat,
@@ -110,11 +166,9 @@ export default function MarineHomeScreen() {
       setNetworkType(info.type);
     });
 
-    // 2. Request Location & Start Live GPS & Gyro Tracking
     const setupGpsAndHeading = async () => {
       const status = await GpsService.requestPermissions();
       if (status === 'granted') {
-        // Start Live GPS location tracking
         GpsService.startLocationTracking((telemetry: LocationTelemetry) => {
           setHasGpsFix(true);
           latestCoordsRef.current = { lat: telemetry.latitude, lon: telemetry.longitude };
@@ -128,7 +182,6 @@ export default function MarineHomeScreen() {
             setAccuracy(telemetry.accuracy);
           }
 
-          // Dynamically compute authentic GNSS satellite constellation for current GPS fix
           const satData = DeviceStatusService.calculateSatellites(
             telemetry.latitude,
             telemetry.longitude,
@@ -139,7 +192,6 @@ export default function MarineHomeScreen() {
           setVisibleSatellites(satData.visibleCount);
         });
 
-        // Start Live Heading & Gyro tracking
         GpsService.startHeadingTracking((rawHeading: number) => {
           setSensorActive(true);
           const cur = filteredHRef.current;
@@ -161,7 +213,7 @@ export default function MarineHomeScreen() {
       unsubNetwork();
       GpsService.stopAll();
     };
-  }, []);
+  }, [selectedPortId]);
 
   const handlePressFeature = (id: MarineFeatureId, label: string) => {
     if (id === 'compass') {
@@ -267,33 +319,29 @@ export default function MarineHomeScreen() {
 
   const themeColors = nightMode
     ? {
-      background: '#0D1117',
-      cardBg: '#161B22',
-      headerText: '#ECEFF1',
-      statusGreen: '#00E676',
-      gnssBadgeBg: 'rgba(16, 185, 129, 0.12)',
-      gnssBadgeBorder: 'rgba(16, 185, 129, 0.35)',
-      userBadgeBg: 'rgba(56, 189, 248, 0.12)',
-      userBadgeBorder: 'rgba(56, 189, 248, 0.35)',
-      userBadgeText: '#38BDF8',
-      nightToggleBg: 'rgba(245, 158, 11, 0.14)',
-      nightToggleBorder: 'rgba(245, 158, 11, 0.4)',
-      nightToggleText: '#FBBF24',
-    }
+        background: '#0D1117',
+        cardBg: '#161B22',
+        headerText: '#ECEFF1',
+        statusGreen: '#00E676',
+        userBadgeBg: 'rgba(56, 189, 248, 0.12)',
+        userBadgeBorder: 'rgba(56, 189, 248, 0.35)',
+        userBadgeText: '#38BDF8',
+        nightToggleBg: 'rgba(245, 158, 11, 0.14)',
+        nightToggleBorder: 'rgba(245, 158, 11, 0.4)',
+        nightToggleText: '#FBBF24',
+      }
     : {
-      background: '#FFFFFF',
-      cardBg: '#F8FAFC',
-      headerText: '#1E293B',
-      statusGreen: '#00C853',
-      gnssBadgeBg: 'rgba(16, 185, 129, 0.08)',
-      gnssBadgeBorder: 'rgba(16, 185, 129, 0.25)',
-      userBadgeBg: 'rgba(37, 99, 235, 0.08)',
-      userBadgeBorder: 'rgba(37, 99, 235, 0.25)',
-      userBadgeText: '#1D4ED8',
-      nightToggleBg: 'rgba(100, 116, 139, 0.08)',
-      nightToggleBorder: '#CBD5E1',
-      nightToggleText: '#475569',
-    };
+        background: '#FFFFFF',
+        cardBg: '#F8FAFC',
+        headerText: '#1E293B',
+        statusGreen: '#00C853',
+        userBadgeBg: 'rgba(37, 99, 235, 0.08)',
+        userBadgeBorder: 'rgba(37, 99, 235, 0.25)',
+        userBadgeText: '#1D4ED8',
+        nightToggleBg: 'rgba(100, 116, 139, 0.08)',
+        nightToggleBorder: '#CBD5E1',
+        nightToggleText: '#475569',
+      };
 
   return (
     <SafeAreaView
@@ -307,32 +355,50 @@ export default function MarineHomeScreen() {
         bounces={false}>
         {/* Top Control Bar (Cockpit Marine Status HUD) */}
         <View style={styles.topControlBar}>
+          {/* LEFT SIDE: PORT SELECTOR DROPDOWN (Replaces 3D FIX badge) */}
           <TouchableOpacity
-            activeOpacity={0.7}
-            onPress={handlePressSignal}
+            activeOpacity={0.75}
+            onPress={() => setShowPortModal(true)}
             style={[
-              styles.fixStatusBadge,
+              styles.portSelectBtn,
               {
-                backgroundColor: hasGpsFix ? themeColors.gnssBadgeBg : 'rgba(245, 158, 11, 0.12)',
-                borderColor: hasGpsFix ? themeColors.gnssBadgeBorder : 'rgba(245, 158, 11, 0.35)',
+                backgroundColor: nightMode
+                  ? 'rgba(0, 229, 255, 0.12)'
+                  : 'rgba(2, 136, 209, 0.10)',
+                borderColor: nightMode
+                  ? 'rgba(0, 229, 255, 0.35)'
+                  : 'rgba(2, 136, 209, 0.30)',
               },
             ]}>
-            <View
+            <Text style={styles.portSelectIcon}>⚓</Text>
+            <View style={styles.portSelectTextGroup}>
+              <Text
+                numberOfLines={1}
+                style={[
+                  styles.portSelectTitle,
+                  { color: nightMode ? '#00E5FF' : '#0288D1' },
+                ]}>
+                {activePort.nameGu}
+              </Text>
+              <Text
+                numberOfLines={1}
+                style={[
+                  styles.portSelectSubtitle,
+                  { color: themeColors.headerText },
+                ]}>
+                {activePort.name}
+              </Text>
+            </View>
+            <Text
               style={[
-                styles.statusDot,
-                { backgroundColor: hasGpsFix ? '#10B981' : '#F59E0B' },
-              ]}
-            />
-            <Text style={[styles.fixStatusText, { color: hasGpsFix ? (nightMode ? '#34D399' : '#059669') : '#F59E0B' }]}>
-              {hasGpsFix ? `3D FIX • ±${accuracy}m` : 'ACQUIRING GNSS...'}
+                styles.portSelectArrow,
+                { color: nightMode ? '#00E5FF' : '#0288D1' },
+              ]}>
+              ▾
             </Text>
-            {hasGpsFix && (
-              <View style={[styles.svMiniPill, { backgroundColor: nightMode ? '#1E293B' : '#E2E8F0' }]}>
-                <Text style={[styles.svMiniPillText, { color: themeColors.headerText }]}>{usedSatellites} SV</Text>
-              </View>
-            )}
           </TouchableOpacity>
 
+          {/* RIGHT SIDE: ACCOUNT PROFILE & NIGHT MODE TOGGLE */}
           <View style={styles.topRightControls}>
             <TouchableOpacity
               activeOpacity={0.75}
@@ -370,13 +436,12 @@ export default function MarineHomeScreen() {
           </View>
         </View>
 
-        {/* 1. Fully Working Satellite Skyplot Radar & Compass View */}
+        {/* 1. Tactical Satellite Radar Compass Display */}
         <SatelliteRadar
           heading={heading}
           satellites={satellites}
-          usedCount={usedSatellites}
-          visibleCount={visibleSatellites}
-          altitude={altitude}
+          usedSatellites={usedSatellites}
+          visibleSatellites={visibleSatellites}
           accuracy={accuracy}
           nightMode={nightMode}
           onSelectSatellite={handleSelectSatellite}
@@ -434,6 +499,238 @@ export default function MarineHomeScreen() {
         }}
         onMarkWaypoint={handleMarkWaypoint}
       />
+
+      {/* GUJARAT ALL BANDARS SELECTOR MODAL WITH GPS DISTANCE (KM) & SEARCH */}
+      <Modal visible={showPortModal} transparent animationType="slide">
+        <TouchableWithoutFeedback onPress={() => setShowPortModal(false)}>
+          <View style={styles.modalBackdrop}>
+            <TouchableWithoutFeedback onPress={() => {}}>
+              <View
+                style={[
+                  styles.bandarModalCard,
+                  {
+                    backgroundColor: themeColors.cardBg,
+                    borderColor: nightMode ? '#1F2937' : '#E2E8F0',
+                  },
+                ]}>
+                {/* Header */}
+                <View style={styles.bandarModalHeader}>
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      style={[
+                        styles.bandarModalTitle,
+                        { color: themeColors.headerText },
+                      ]}>
+                      ⚓ ગુજરાતના તમામ બંદરો ({MARINE_PORTS_DATABASE.length})
+                    </Text>
+                    <Text
+                      style={[
+                        styles.bandarModalSubtitle,
+                        { color: nightMode ? '#38BDF8' : '#0288D1' },
+                      ]}>
+                      {latestCoordsRef.current
+                        ? `📍 તમારું સ્થાન: ${latestCoordsRef.current.lat.toFixed(2)}°N, ${latestCoordsRef.current.lon.toFixed(2)}°E • નજીકનું બંદર પહેલાં`
+                        : '📍 GPS લોકેશન આધારે કિલોમીટર (km) ગણતરી'}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => setShowPortModal(false)}
+                    style={[
+                      styles.modalCloseBtn,
+                      {
+                        backgroundColor: nightMode
+                          ? 'rgba(255, 255, 255, 0.08)'
+                          : '#E2E8F0',
+                      },
+                    ]}>
+                    <Text
+                      style={[
+                        styles.modalCloseText,
+                        { color: themeColors.headerText },
+                      ]}>
+                      ✕
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Search Bar */}
+                <View
+                  style={[
+                    styles.bandarSearchBox,
+                    {
+                      backgroundColor: nightMode ? '#0D1117' : '#FFFFFF',
+                      borderColor: nightMode ? '#30363D' : '#CBD5E1',
+                    },
+                  ]}>
+                  <Text style={styles.searchIconText}>🔍</Text>
+                  <TextInput
+                    value={portSearchText}
+                    onChangeText={setPortSearchText}
+                    placeholder="બંદર શોધો / Search bandar name..."
+                    placeholderTextColor={nightMode ? '#8B949E' : '#64748B'}
+                    style={[
+                      styles.bandarSearchInput,
+                      { color: themeColors.headerText },
+                    ]}
+                    autoCorrect={false}
+                    clearButtonMode="while-editing"
+                  />
+                  {portSearchText.length > 0 && (
+                    <TouchableOpacity
+                      onPress={() => setPortSearchText('')}
+                      style={styles.searchClearBtn}>
+                      <Text
+                        style={[
+                          styles.searchClearText,
+                          { color: nightMode ? '#8B949E' : '#64748B' },
+                        ]}>
+                        ✕
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {/* Scrollable Bandar List */}
+                <ScrollView
+                  style={styles.bandarScrollView}
+                  contentContainerStyle={styles.bandarScrollContent}
+                  showsVerticalScrollIndicator={true}
+                  keyboardShouldPersistTaps="handled">
+                  {filteredAndSortedPorts.length === 0 ? (
+                    <View style={styles.emptyPortView}>
+                      <Text style={{ fontSize: 28 }}>⚓</Text>
+                      <Text
+                        style={[
+                          styles.emptyPortText,
+                          { color: nightMode ? '#8B949E' : '#64748B' },
+                        ]}>
+                        કોઈ બંદર મળ્યું નથી ("{portSearchText}")
+                      </Text>
+                    </View>
+                  ) : (
+                    filteredAndSortedPorts.map((item, idx) => {
+                      const isSelected = selectedPortId === item.id;
+                      const isClosest =
+                        idx === 0 &&
+                        latestCoordsRef.current !== null &&
+                        item.distanceKm !== null;
+
+                      return (
+                        <TouchableOpacity
+                          key={item.id}
+                          activeOpacity={0.7}
+                          onPress={() => {
+                            SettingsStore.setSelectedPortId(item.id);
+                            setSelectedPortId(item.id);
+                            setShowPortModal(false);
+                            setPortSearchText('');
+                          }}
+                          style={[
+                            styles.bandarItemCard,
+                            {
+                              backgroundColor: isSelected
+                                ? nightMode
+                                  ? 'rgba(0, 229, 255, 0.12)'
+                                  : 'rgba(2, 136, 209, 0.12)'
+                                : nightMode
+                                ? '#0D1117'
+                                : '#FFFFFF',
+                              borderColor: isSelected
+                                ? '#0288D1'
+                                : nightMode
+                                ? '#21262D'
+                                : '#E2E8F0',
+                              borderWidth: isSelected ? 1.5 : 1,
+                            },
+                          ]}>
+                          <View style={styles.bandarItemLeft}>
+                            <View
+                              style={[
+                                styles.bandarIconCircle,
+                                {
+                                  backgroundColor: isSelected
+                                    ? '#0288D1'
+                                    : nightMode
+                                    ? '#161B22'
+                                    : '#E2E8F0',
+                                },
+                              ]}>
+                              <Text
+                                style={{
+                                  fontSize: 16,
+                                  color: isSelected ? '#FFFFFF' : '#0288D1',
+                                }}>
+                                ⚓
+                              </Text>
+                            </View>
+                            <View style={styles.bandarNameCol}>
+                              <View style={styles.bandarTitleRow}>
+                                <Text
+                                  style={[
+                                    styles.bandarNameMain,
+                                    {
+                                      color: isSelected
+                                        ? '#0288D1'
+                                        : themeColors.headerText,
+                                      fontWeight: isSelected ? '900' : '700',
+                                    },
+                                  ]}>
+                                  {item.nameGu}
+                                </Text>
+                                {isClosest && (
+                                  <View style={styles.closestTag}>
+                                    <Text style={styles.closestTagText}>
+                                      સૌથી નજીક / NEAREST
+                                    </Text>
+                                  </View>
+                                )}
+                              </View>
+                              <Text
+                                style={[
+                                  styles.bandarNameEn,
+                                  {
+                                    color: nightMode ? '#8B949E' : '#64748B',
+                                  },
+                                ]}>
+                                {item.name} • {item.regionGu}
+                              </Text>
+                            </View>
+                          </View>
+
+                          <View style={styles.bandarItemRight}>
+                            {item.distanceKm !== null && (
+                              <View
+                                style={[
+                                  styles.distancePill,
+                                  isClosest && styles.distancePillClosest,
+                                ]}>
+                                <Text
+                                  style={[
+                                    styles.distanceNumber,
+                                    isClosest && styles.distanceNumberClosest,
+                                  ]}>
+                                  {item.distanceKm < 1
+                                    ? `${Math.round(item.distanceKm * 1000)}m`
+                                    : `${item.distanceKm.toFixed(1)} km`}
+                                </Text>
+                              </View>
+                            )}
+                            {isSelected && (
+                              <View style={styles.activeCheckPill}>
+                                <Text style={styles.activeCheckText}>✓ સક્રિય</Text>
+                              </View>
+                            )}
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })
+                  )}
+                </ScrollView>
+              </View>
+            </TouchableWithoutFeedback>
+          </View>
+        </TouchableWithoutFeedback>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -451,39 +748,46 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     paddingTop: 6,
     paddingBottom: 6,
+    gap: 8,
   },
-  fixStatusBadge: {
+
+  /* Left Port Selector Button (Replaces 3D FIX badge) */
+  portSelectBtn: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingVertical: 6,
+    gap: 8,
+    paddingVertical: 5,
     paddingHorizontal: 10,
     borderRadius: 16,
     borderWidth: 1.2,
+    maxWidth: 220,
   },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+  portSelectIcon: {
+    fontSize: 16,
   },
-  fixStatusText: {
-    fontSize: 11.5,
+  portSelectTextGroup: {
+    flex: 1,
+    gap: 1,
+  },
+  portSelectTitle: {
+    fontSize: 12.5,
     fontWeight: '900',
-    letterSpacing: 0.3,
+    letterSpacing: 0.2,
   },
-  svMiniPill: {
-    paddingHorizontal: 5,
-    paddingVertical: 1.5,
-    borderRadius: 6,
-    marginLeft: 2,
+  portSelectSubtitle: {
+    fontSize: 10,
+    fontWeight: '600',
+    opacity: 0.8,
   },
-  svMiniPillText: {
-    fontSize: 9.5,
-    fontWeight: '800',
+  portSelectArrow: {
+    fontSize: 12,
+    fontWeight: '900',
   },
+
   topRightControls: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -513,5 +817,180 @@ const styles = StyleSheet.create({
     fontSize: 11.5,
     fontWeight: '900',
     letterSpacing: 0.3,
+  },
+
+  /* Modal Styles for Bandar Selection */
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.70)',
+    justifyContent: 'flex-end',
+  },
+  bandarModalCard: {
+    maxHeight: '82%',
+    minHeight: '55%',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+    borderWidth: 1.5,
+    borderBottomWidth: 0,
+    gap: 12,
+  },
+  bandarModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    paddingBottom: 4,
+  },
+  bandarModalTitle: {
+    fontSize: 17,
+    fontWeight: '900',
+    letterSpacing: 0.3,
+  },
+  bandarModalSubtitle: {
+    fontSize: 11.5,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  modalCloseBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 8,
+  },
+  modalCloseText: {
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  bandarSearchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1.2,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    height: 42,
+    gap: 8,
+  },
+  searchIconText: {
+    fontSize: 14,
+  },
+  bandarSearchInput: {
+    flex: 1,
+    fontSize: 13.5,
+    fontWeight: '600',
+    paddingVertical: 0,
+  },
+  searchClearBtn: {
+    padding: 4,
+  },
+  searchClearText: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  bandarScrollView: {
+    flex: 1,
+  },
+  bandarScrollContent: {
+    gap: 8,
+    paddingBottom: 16,
+  },
+  emptyPortView: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 40,
+    gap: 8,
+  },
+  emptyPortText: {
+    fontSize: 13.5,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  bandarItemCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 11,
+    borderRadius: 14,
+  },
+  bandarItemLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  bandarIconCircle: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bandarNameCol: {
+    flex: 1,
+    gap: 2,
+  },
+  bandarTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexWrap: 'wrap',
+  },
+  bandarNameMain: {
+    fontSize: 14,
+  },
+  closestTag: {
+    backgroundColor: '#00E676',
+    borderRadius: 6,
+    paddingHorizontal: 5,
+    paddingVertical: 1.5,
+  },
+  closestTagText: {
+    color: '#000000',
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 0.3,
+  },
+  bandarNameEn: {
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  bandarItemRight: {
+    alignItems: 'flex-end',
+    gap: 4,
+    marginLeft: 8,
+  },
+  distancePill: {
+    backgroundColor: 'rgba(2, 136, 209, 0.12)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(2, 136, 209, 0.3)',
+  },
+  distancePillClosest: {
+    backgroundColor: 'rgba(0, 230, 118, 0.15)',
+    borderColor: '#00E676',
+  },
+  distanceNumber: {
+    color: '#0288D1',
+    fontSize: 11.5,
+    fontWeight: '900',
+  },
+  distanceNumberClosest: {
+    color: '#00E676',
+  },
+  activeCheckPill: {
+    backgroundColor: '#0288D1',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  activeCheckText: {
+    color: '#FFFFFF',
+    fontSize: 9.5,
+    fontWeight: '900',
   },
 });
