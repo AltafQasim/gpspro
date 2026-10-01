@@ -1,7 +1,9 @@
 import { BackButton } from '@/components/ui/back-button';
 import {
   GpsService,
-  LocationTelemetry
+  LocationTelemetry,
+  calculateDistanceKm,
+  calculateNavDistanceAndBearing,
 } from '@/services/gpsService';
 import { SettingsStore } from '@/services/settingsStore';
 import { VoiceService } from '@/services/voiceService';
@@ -11,6 +13,7 @@ import {
   getWaypoints,
   setActiveTarget,
   subscribeActiveTarget,
+  dmmToDecimal,
 } from '@/services/waypointStore';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -28,6 +31,7 @@ import {
   TextInput,
   TouchableOpacity,
   TouchableWithoutFeedback,
+  Vibration,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -113,6 +117,8 @@ export default function CompassScreen() {
   const isNavigatingRef = useRef<boolean>(true);
   const targetNameRef = useRef<string>('7ka cheo ram reef');
   const panStartHeadingRef = useRef<number>(354);
+  const targetPointRef = useRef<{ lat: number; lon: number } | null>({ lat: 20.732417, lon: 71.0799 });
+  const hasArrivedRef = useRef<boolean>(false);
 
   // Sync refs with state
   useEffect(() => {
@@ -142,8 +148,8 @@ export default function CompassScreen() {
 
     Animated.spring(rotationAnim, {
       toValue: accumulatedRotationRef.current,
-      friction: 12,
-      tension: 50,
+      friction: 18,
+      tension: 160,
       useNativeDriver: true,
     }).start();
 
@@ -155,8 +161,8 @@ export default function CompassScreen() {
 
       Animated.spring(arrowRotateAnim, {
         toValue: accumulatedArrowRef.current,
-        friction: 12,
-        tension: 50,
+        friction: 18,
+        tension: 160,
         useNativeDriver: true,
       }).start();
     }
@@ -174,9 +180,14 @@ export default function CompassScreen() {
       setDistanceNmi(params.targetDistance || '0.00 Mi');
       if (params.targetLat && params.targetLon) {
         setTargetCoords(`${params.targetLat}, ${params.targetLon}`);
+        targetPointRef.current = {
+          lat: parseFloat(params.targetLat) || 0,
+          lon: parseFloat(params.targetLon) || 0,
+        };
       }
       setIsNavigating(true);
       isNavigatingRef.current = true;
+      hasArrivedRef.current = false;
       animateToHeading(headingRef.current, b, true);
     } else {
       const globalTarget = getActiveTarget();
@@ -189,8 +200,13 @@ export default function CompassScreen() {
         setTargetCoords(
           `${globalTarget.latDir} ${globalTarget.latDeg}° ${globalTarget.latMin}', ${globalTarget.lonDir} ${globalTarget.lonDeg}° ${globalTarget.lonMin}'`
         );
+        targetPointRef.current = {
+          lat: globalTarget.latitude || dmmToDecimal(globalTarget.latDeg, globalTarget.latMin, globalTarget.latDir),
+          lon: globalTarget.longitude || dmmToDecimal(globalTarget.lonDeg, globalTarget.lonMin, globalTarget.lonDir),
+        };
         setIsNavigating(true);
         isNavigatingRef.current = true;
+        hasArrivedRef.current = false;
         animateToHeading(headingRef.current, b, true);
       }
     }
@@ -208,8 +224,13 @@ export default function CompassScreen() {
         setTargetCoords(
           `${newTarget.latDir} ${newTarget.latDeg}° ${newTarget.latMin}', ${newTarget.lonDir} ${newTarget.lonDeg}° ${newTarget.lonMin}'`
         );
+        targetPointRef.current = {
+          lat: newTarget.latitude || dmmToDecimal(newTarget.latDeg, newTarget.latMin, newTarget.latDir),
+          lon: newTarget.longitude || dmmToDecimal(newTarget.lonDeg, newTarget.lonMin, newTarget.lonDir),
+        };
         setIsNavigating(true);
         isNavigatingRef.current = true;
+        hasArrivedRef.current = false;
         animateToHeading(headingRef.current, b, true);
       } else {
         setTargetName('');
@@ -219,6 +240,8 @@ export default function CompassScreen() {
         targetBearingRef.current = 0;
         setDistanceNmi('--');
         setTargetCoords('--');
+        targetPointRef.current = null;
+        hasArrivedRef.current = false;
       }
     });
     return unsub;
@@ -246,14 +269,39 @@ export default function CompassScreen() {
     const diff = ((((rawHeading - cur) % 360) + 540) % 360) - 180;
 
     // Small jitter deadzone to prevent micro-vibrations
-    if (Math.abs(diff) < 0.5) return;
+    if (Math.abs(diff) < 0.2) return;
 
-    // Adaptive smoothing: 0.22 for normal motion, 0.45 for rapid turns
-    const alpha = Math.abs(diff) > 40 ? 0.45 : 0.22;
+    // Fast, ultra-responsive smoothing: 0.65 for steady tracking, 0.90 for quick turning so there is zero rotation lag
+    const alpha = Math.abs(diff) > 20 ? 0.90 : 0.65;
     const nextH = ((cur + diff * alpha) % 360 + 360) % 360;
     filteredSensorHRef.current = nextH;
 
     animateToHeading(nextH, targetBearingRef.current, isNavigatingRef.current && !!targetNameRef.current);
+  };
+
+  // Trigger arrival alerts: Dual-tone sonar beep + tactile vibration + voice alert + modal
+  const handleTargetArrived = (name: string) => {
+    // 1. Tactile repeated pulse vibration pattern
+    try {
+      Vibration.vibrate([0, 400, 200, 400, 200, 600]);
+    } catch {
+      // Ignore vibration error
+    }
+
+    // 2. High-pitch dual-tone marine sonar arrival beep sound
+    VoiceService.playArrivalBeep();
+
+    // 3. Voice announcement (in Gujarati / Hindi / English if not muted)
+    if (!isMuted) {
+      VoiceService.announceTargetArrival(name);
+    }
+
+    // 4. Visual Alert Notification
+    Alert.alert(
+      '🎯 TARGET REACHED! / લક્ષ્ય આવી ગયું!',
+      `તમે લક્ષ્ય "${name}" પર સફળતાપૂર્વક પહોંચી ગયા છો.\nYou have reached the destination target.`,
+      [{ text: 'OK' }]
+    );
   };
 
   // Live GPS Telemetry Update
@@ -264,6 +312,35 @@ export default function CompassScreen() {
     setCurrentPosLon(c.lonFormatted);
     if (telemetry.speedKnots >= 0) {
       setSpeedKnots(telemetry.speedKnots);
+    }
+
+    // Live Target Navigation, Bearing & Arrival Tracking
+    if (isNavigatingRef.current && targetPointRef.current) {
+      const distKm = calculateDistanceKm(
+        telemetry.latitude,
+        telemetry.longitude,
+        targetPointRef.current.lat,
+        targetPointRef.current.lon
+      );
+      const distMeters = distKm * 1000;
+      const nav = calculateNavDistanceAndBearing(
+        telemetry.latitude,
+        telemetry.longitude,
+        targetPointRef.current.lat,
+        targetPointRef.current.lon
+      );
+      setTargetBearing(nav.bearing);
+      targetBearingRef.current = nav.bearing;
+      setDistanceNmi(SettingsStore.convertDistanceString(nav.distanceNmi));
+
+      // Target Arrival Threshold: within 35 meters (approx 0.02 NM)
+      if (distMeters <= 35 && !hasArrivedRef.current) {
+        hasArrivedRef.current = true;
+        handleTargetArrived(targetNameRef.current);
+      } else if (distMeters > 50) {
+        // Reset arrival trigger if vessel moves away
+        hasArrivedRef.current = false;
+      }
     }
   };
 
@@ -315,6 +392,7 @@ export default function CompassScreen() {
     return () => {
       mounted = false;
       GpsService.stopAll();
+      VoiceService.stop();
     };
   }, []);
 
@@ -360,14 +438,19 @@ export default function CompassScreen() {
     })
   ).current;
 
-  // Toggle Mute Audio
+  // Toggle Mute Audio - Immediately silences voice across all screens
   const handleToggleMute = () => {
-    setIsMuted(!isMuted);
+    const nextMuted = !isMuted;
+    setIsMuted(nextMuted);
+    SettingsStore.updateSettings({ voiceAnnounce: !nextMuted });
+    if (nextMuted) {
+      VoiceService.stop();
+    }
     Alert.alert(
-      isMuted ? 'Off-Course Voice Alarm Enabled 🔔' : 'Alarms Muted 🔕',
-      isMuted
-        ? 'Audible marine voice alert will sound if vessel drifts > 15° off target bearing.'
-        : 'All navigational drift and off-course alerts muted.'
+      !nextMuted ? 'Voice Alarm Enabled 🔔' : 'Alarms Muted 🔕',
+      !nextMuted
+        ? 'Voice alerts active across all screens.'
+        : 'Voice immediately silenced and muted.'
     );
   };
 
@@ -378,6 +461,8 @@ export default function CompassScreen() {
     setTargetBearing(0);
     setDistanceNmi('--');
     setTargetCoords('--');
+    targetPointRef.current = null;
+    hasArrivedRef.current = false;
     setActiveTarget(null);
     Alert.alert('Target Cleared ✕', 'Waypoint navigation stopped. Compass is now in Free Steering mode.');
   };
@@ -394,6 +479,11 @@ export default function CompassScreen() {
     setTargetBearing(b);
     setDistanceNmi(wp.distance);
     setTargetCoords(`${wp.latDir} ${wp.latDeg}° ${wp.latMin}', ${wp.lonDir} ${wp.lonDeg}° ${wp.lonMin}'`);
+    targetPointRef.current = {
+      lat: wp.latitude || dmmToDecimal(wp.latDeg, wp.latMin, wp.latDir),
+      lon: wp.longitude || dmmToDecimal(wp.lonDeg, wp.lonMin, wp.lonDir),
+    };
+    hasArrivedRef.current = false;
     setIsNavigating(true);
     setActiveTarget(wp);
     VoiceService.announceWaypoint(wp.name, wp.distance, wp.bearing);
@@ -402,9 +492,6 @@ export default function CompassScreen() {
     Alert.alert('Navigation Started 🧭', `Target: ${wp.name}\nBearing: ${wp.bearing} • Distance: ${wp.distance}`);
   };
 
-  // Calculate Relative Steering Cue
-  const relativeSteerDeg = isNavigating && targetName ? ((targetBearing - heading + 540) % 360) - 180 : 0;
-  const isTargetLocked = Math.abs(relativeSteerDeg) <= 3;
 
   const theme = nightMode
     ? {
@@ -736,64 +823,6 @@ export default function CompassScreen() {
           </View>
         </View>
 
-        {/* DYNAMIC STEERING GUIDANCE BANNER */}
-        {isNavigating && !!targetName ? (
-          <View
-            style={[
-              styles.steeringBanner,
-              isTargetLocked ? styles.steeringLocked : styles.steeringAdjust,
-            ]}>
-            <View style={styles.steeringHeaderRow}>
-              <View style={[styles.steeringBadgePill, isTargetLocked ? styles.badgeLocked : styles.badgeAdjust]}>
-                <Text style={styles.steeringBadgeText}>
-                  {isTargetLocked ? '✓ ON COURSE' : relativeSteerDeg > 0 ? '👉 STEER STBD' : '👈 STEER PORT'}
-                </Text>
-              </View>
-              <Text style={[styles.steeringDevText, { color: isTargetLocked ? '#10B981' : '#F59E0B' }]}>
-                {isTargetLocked ? 'DEV: 0° (LOCK)' : `DEV: ${Math.abs(relativeSteerDeg)}°`}
-              </Text>
-            </View>
-
-            {/* Visual Deviation Gauge Bar */}
-            <View style={styles.deviationBarWrap}>
-              <View style={styles.deviationCenterNotch} />
-              <View
-                style={[
-                  styles.deviationIndicator,
-                  {
-                    left: `${Math.max(5, Math.min(95, 50 + (relativeSteerDeg / 45) * 45))}%`,
-                    backgroundColor: isTargetLocked ? '#10B981' : relativeSteerDeg > 0 ? '#10B981' : '#EF4444',
-                  },
-                ]}
-              />
-            </View>
-
-            <View style={styles.steeringMetaRow}>
-              <Text style={[styles.steeringTargetName, { color: theme.valueBright }]} numberOfLines={1}>
-                🎯 {targetName}
-              </Text>
-              <Text style={[styles.steeringDistanceText, { color: theme.accent }]}>
-                {distanceNmi} • {targetBearing}°
-              </Text>
-            </View>
-          </View>
-        ) : (
-          <TouchableOpacity
-            onPress={handleOpenWaypointPicker}
-            activeOpacity={0.8}
-            style={[styles.noTargetBanner, { backgroundColor: theme.cardBg, borderColor: theme.cardBorder }]}>
-            <Text style={styles.noTargetBannerIcon}>🎯</Text>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.noTargetBannerTitle, { color: theme.valueBright }]}>
-                Free Steering Mode Active
-              </Text>
-              <Text style={[styles.noTargetBannerSub, { color: theme.label }]}>
-                Tap here to select saved waypoint or enter coordinates
-              </Text>
-            </View>
-            <Text style={[styles.noTargetArrow, { color: theme.accent }]}>›</Text>
-          </TouchableOpacity>
-        )}
 
         {/* 5 SHORTCUT NAVIGATION ROUND ICONS (Matching Screenshot) */}
         <View style={styles.shortcutRow}>
@@ -1541,138 +1570,7 @@ const styles = StyleSheet.create({
     fontWeight: '900',
   },
 
-  // STEERING GUIDANCE BANNER
-  steeringBanner: {
-    width: '92%',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 18,
-    marginBottom: 10,
-    borderWidth: 1.5,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 6,
-    elevation: 2,
-  },
-  steeringLocked: {
-    backgroundColor: 'rgba(16, 185, 129, 0.1)',
-    borderColor: 'rgba(16, 185, 129, 0.6)',
-  },
-  steeringAdjust: {
-    backgroundColor: 'rgba(245, 158, 11, 0.1)',
-    borderColor: 'rgba(245, 158, 11, 0.6)',
-  },
-  steeringHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    width: '100%',
-    marginBottom: 8,
-  },
-  steeringBadgePill: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  badgeLocked: {
-    backgroundColor: '#10B981',
-  },
-  badgeAdjust: {
-    backgroundColor: '#F59E0B',
-  },
-  steeringBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '900',
-    letterSpacing: 0.5,
-  },
-  steeringDevText: {
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-  },
-  deviationBarWrap: {
-    width: '100%',
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: 'rgba(100, 116, 139, 0.2)',
-    position: 'relative',
-    justifyContent: 'center',
-    marginVertical: 4,
-  },
-  deviationCenterNotch: {
-    position: 'absolute',
-    left: '50%',
-    marginLeft: -1,
-    width: 2,
-    height: 12,
-    backgroundColor: '#64748B',
-    borderRadius: 1,
-  },
-  deviationIndicator: {
-    position: 'absolute',
-    width: 14,
-    height: 14,
-    marginLeft: -7,
-    borderRadius: 7,
-    borderWidth: 2,
-    borderColor: '#FFFFFF',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.3,
-    shadowRadius: 2,
-    elevation: 3,
-  },
-  steeringMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    width: '100%',
-    marginTop: 6,
-  },
-  steeringTargetName: {
-    fontSize: 13,
-    fontWeight: '800',
-    flex: 1,
-  },
-  steeringDistanceText: {
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  noTargetBanner: {
-    width: '92%',
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 16,
-    marginTop: 18,
-    marginBottom: 10,
-    borderWidth: 1.5,
-    borderStyle: 'dashed',
-    gap: 12,
-  },
-  noTargetBannerIcon: {
-    fontSize: 24,
-  },
-  noTargetBannerTitle: {
-    fontSize: 13,
-    fontWeight: '800',
-    letterSpacing: 0.3,
-  },
-  noTargetBannerSub: {
-    fontSize: 11,
-    fontWeight: '600',
-    marginTop: 2,
-  },
-  noTargetArrow: {
-    fontSize: 22,
-    fontWeight: '700',
-  },
+
 
   // 5 SHORTCUT BUTTONS
   shortcutRow: {

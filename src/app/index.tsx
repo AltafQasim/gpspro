@@ -31,7 +31,7 @@ import {
   MARINE_PORTS_DATABASE,
   MarinePortInfo,
 } from '@/services/marineData';
-import { SettingsStore } from '@/services/settingsStore';
+import { SettingsStore, SpeechLanguage, VesselProfile } from '@/services/settingsStore';
 import { SubscriptionStore } from '@/services/subscriptionStore';
 
 export default function MarineHomeScreen() {
@@ -47,19 +47,26 @@ export default function MarineHomeScreen() {
   const [portSearchText, setPortSearchText] = useState<string>('');
 
   // Paywall & Subscription Lockout State
+  const [subState, setSubState] = useState(() => SubscriptionStore.getState());
   const [isAccessAllowed, setIsAccessAllowed] = useState<boolean>(() => SubscriptionStore.isAccessAllowed());
   const [premiumModalVisible, setPremiumModalVisible] = useState<boolean>(() => !SubscriptionStore.isAccessAllowed());
 
-  // Auth state for Top Status Bar
+  // Auth & Captain Profile state
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(AuthStore.isLoggedIn());
   const [userPhone, setUserPhone] = useState<string | null>(AuthStore.getPhone());
+  const [userName, setUserName] = useState<string>(() => AuthStore.getUserName());
+  const [showProfileModal, setShowProfileModal] = useState<boolean>(false);
+  const [appLanguage, setAppLanguage] = useState<SpeechLanguage>(() => SettingsStore.getSettings().ttsLang);
+  const [vesselProfile, setVesselProfile] = useState<VesselProfile>(() => SettingsStore.getSettings().profile);
 
   useEffect(() => {
     const unsubAuth = AuthStore.subscribe((auth) => {
       setIsLoggedIn(auth.isLoggedIn);
       setUserPhone(auth.phoneNumber);
+      setUserName(auth.userName || 'Captain Sagar');
     });
-    const unsubSub = SubscriptionStore.subscribe(() => {
+    const unsubSub = SubscriptionStore.subscribe((sub) => {
+      setSubState(sub);
       const allowed = SubscriptionStore.isAccessAllowed();
       setIsAccessAllowed(allowed);
       if (!allowed) {
@@ -104,6 +111,13 @@ export default function MarineHomeScreen() {
     );
   }, [selectedPortId]);
 
+  // Single-language port name strictly according to current app language (Gujarati / Hindi / English)
+  const activePortDisplayName = useMemo(() => {
+    if (appLanguage === 'Gujarati') return activePort.nameGu || activePort.name;
+    if (appLanguage === 'Hindi') return activePort.nameHi || activePort.name;
+    return activePort.name;
+  }, [activePort, appLanguage]);
+
   // Filtered & Distance-Sorted Ports List for the Modal
   const filteredAndSortedPorts = useMemo(() => {
     const query = portSearchText.trim().toLowerCase();
@@ -143,6 +157,8 @@ export default function MarineHomeScreen() {
 
     const unsubSettings = SettingsStore.subscribe((s) => {
       setNightMode(SettingsStore.isNightMode());
+      setAppLanguage(s.ttsLang);
+      setVesselProfile(s.profile);
       if (s.selectedPortId && s.selectedPortId !== selectedPortId) {
         setSelectedPortId(s.selectedPortId);
       }
@@ -196,8 +212,8 @@ export default function MarineHomeScreen() {
           setSensorActive(true);
           const cur = filteredHRef.current;
           const diff = ((((rawHeading - cur) % 360) + 540) % 360) - 180;
-          if (Math.abs(diff) < 0.5) return;
-          const alpha = Math.abs(diff) > 40 ? 0.45 : 0.25;
+          if (Math.abs(diff) < 0.2) return;
+          const alpha = Math.abs(diff) > 20 ? 0.90 : 0.65;
           const nextH = ((cur + diff * alpha) % 360 + 360) % 360;
           filteredHRef.current = nextH;
           setHeading(Math.round(nextH));
@@ -261,25 +277,7 @@ export default function MarineHomeScreen() {
   };
 
   const handlePressAccount = () => {
-    if (isLoggedIn) {
-      Alert.alert(
-        'Captain Profile ⚓',
-        `Logged in Mobile: +91 ${userPhone || '9876543210'}\nVessel: Sagar Kripa #4\nStatus: Verified Captain (Active Session)`,
-        [
-          { text: 'Close', style: 'cancel' },
-          {
-            text: 'Logout',
-            style: 'destructive',
-            onPress: () => {
-              AuthStore.logout();
-              router.replace('/login');
-            },
-          },
-        ]
-      );
-    } else {
-      router.push('/login');
-    }
+    setShowProfileModal(true);
   };
 
   const handleSelectSatellite = (sat: Satellite) => {
@@ -353,9 +351,9 @@ export default function MarineHomeScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         bounces={false}>
-        {/* Top Control Bar (Cockpit Marine Status HUD) */}
+        {/* Top Control Bar (Marine Cockpit Status HUD) */}
         <View style={styles.topControlBar}>
-          {/* LEFT SIDE: PORT SELECTOR DROPDOWN (Replaces 3D FIX badge) */}
+          {/* LEFT SIDE: PORT SELECTOR DROPDOWN (Single language to maintain compact height) */}
           <TouchableOpacity
             activeOpacity={0.75}
             onPress={() => setShowPortModal(true)}
@@ -363,32 +361,22 @@ export default function MarineHomeScreen() {
               styles.portSelectBtn,
               {
                 backgroundColor: nightMode
-                  ? 'rgba(0, 229, 255, 0.12)'
-                  : 'rgba(2, 136, 209, 0.10)',
+                  ? 'rgba(0, 229, 255, 0.10)'
+                  : 'rgba(2, 136, 209, 0.08)',
                 borderColor: nightMode
                   ? 'rgba(0, 229, 255, 0.35)'
                   : 'rgba(2, 136, 209, 0.30)',
               },
             ]}>
             <Text style={styles.portSelectIcon}>⚓</Text>
-            <View style={styles.portSelectTextGroup}>
-              <Text
-                numberOfLines={1}
-                style={[
-                  styles.portSelectTitle,
-                  { color: nightMode ? '#00E5FF' : '#0288D1' },
-                ]}>
-                {activePort.nameGu}
-              </Text>
-              <Text
-                numberOfLines={1}
-                style={[
-                  styles.portSelectSubtitle,
-                  { color: themeColors.headerText },
-                ]}>
-                {activePort.name}
-              </Text>
-            </View>
+            <Text
+              numberOfLines={1}
+              style={[
+                styles.portSelectTitle,
+                { color: nightMode ? '#00E5FF' : '#0288D1' },
+              ]}>
+              {activePortDisplayName}
+            </Text>
             <Text
               style={[
                 styles.portSelectArrow,
@@ -398,42 +386,24 @@ export default function MarineHomeScreen() {
             </Text>
           </TouchableOpacity>
 
-          {/* RIGHT SIDE: ACCOUNT PROFILE & NIGHT MODE TOGGLE */}
-          <View style={styles.topRightControls}>
-            <TouchableOpacity
-              activeOpacity={0.75}
-              onPress={handlePressAccount}
-              style={[
-                styles.accountToggleBtn,
-                {
-                  backgroundColor: themeColors.userBadgeBg,
-                  borderColor: themeColors.userBadgeBorder,
-                },
-              ]}>
-              <Text style={[styles.accountToggleText, { color: themeColors.userBadgeText }]}>
-                {isLoggedIn ? `⚓ ${userPhone ? userPhone.slice(-4) : 'Captain'}` : '⚓ LOGIN'}
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              activeOpacity={0.75}
-              onPress={() => {
-                const next = !nightMode;
-                setNightMode(next);
-                SettingsStore.updateSettings({ theme: next ? 'dark' : 'light' });
-              }}
-              style={[
-                styles.nightToggleBtn,
-                {
-                  backgroundColor: themeColors.nightToggleBg,
-                  borderColor: themeColors.nightToggleBorder,
-                },
-              ]}>
-              <Text style={[styles.nightToggleText, { color: themeColors.nightToggleText }]}>
-                {nightMode ? '🌙 NIGHT' : '☀️ DAY'}
-              </Text>
-            </TouchableOpacity>
-          </View>
+          {/* RIGHT SIDE: PROFILE ICON ONLY AT THE FAR END */}
+          <TouchableOpacity
+            activeOpacity={0.75}
+            onPress={handlePressAccount}
+            style={[
+              styles.profileBtn,
+              {
+                backgroundColor: nightMode
+                  ? 'rgba(0, 229, 255, 0.12)'
+                  : 'rgba(2, 136, 209, 0.10)',
+                borderColor: nightMode
+                  ? 'rgba(0, 229, 255, 0.40)'
+                  : 'rgba(2, 136, 209, 0.35)',
+              },
+            ]}>
+            <Text style={styles.profileAvatarIcon}>👨‍✈️</Text>
+            <View style={styles.profileOnlineDot} />
+          </TouchableOpacity>
         </View>
 
         {/* 1. Tactical Satellite Radar Compass Display */}
@@ -731,6 +701,194 @@ export default function MarineHomeScreen() {
           </View>
         </TouchableWithoutFeedback>
       </Modal>
+
+      {/* CAPTAIN PROFILE CARD MODAL */}
+      <Modal
+        visible={showProfileModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowProfileModal(false)}>
+        <TouchableWithoutFeedback onPress={() => setShowProfileModal(false)}>
+          <View style={styles.settingsModalOverlay}>
+            <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
+              <View
+                style={[
+                  styles.settingsModalCard,
+                  {
+                    backgroundColor: themeColors.cardBg,
+                    borderColor: nightMode ? '#1F2937' : '#E2E8F0',
+                  },
+                ]}>
+                {/* Header */}
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                    <Text style={{ fontSize: 28 }}>👨‍✈️</Text>
+                    <View>
+                      <Text style={[styles.settingsModalTitle, { color: themeColors.headerText }]}>Captain Profile</Text>
+                      <Text style={[styles.settingsModalSubtitle, { color: nightMode ? '#94A3B8' : '#64748B' }]}>
+                        Logged-in user account & license
+                      </Text>
+                    </View>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => setShowProfileModal(false)}
+                    style={{ padding: 6, backgroundColor: nightMode ? '#1E293B' : '#E2E8F0', borderRadius: 12 }}>
+                    <Text style={{ color: nightMode ? '#94A3B8' : '#64748B', fontWeight: '700' }}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Captain Name */}
+                <View style={styles.settingsInputGroup}>
+                  <Text style={[styles.settingsInputLabel, { color: nightMode ? '#94A3B8' : '#64748B' }]}>Captain Full Name</Text>
+                  <TextInput
+                    value={userName}
+                    onChangeText={setUserName}
+                    placeholder="e.g. Captain Sagar"
+                    placeholderTextColor={nightMode ? '#94A3B8' : '#64748B'}
+                    style={[
+                      styles.settingsTextInput,
+                      {
+                        backgroundColor: nightMode ? '#070D1E' : '#F1F5F9',
+                        color: themeColors.headerText,
+                        borderColor: nightMode ? '#1E293B' : '#CBD5E1',
+                        borderWidth: 1,
+                      },
+                    ]}
+                  />
+                </View>
+
+                {/* Mobile Number (Read-only verified) */}
+                <View style={styles.settingsInputGroup}>
+                  <Text style={[styles.settingsInputLabel, { color: nightMode ? '#94A3B8' : '#64748B' }]}>Registered Mobile Number</Text>
+                  <View
+                    style={[
+                      styles.settingsTextInput,
+                      {
+                        backgroundColor: nightMode ? '#070D1E' : '#F1F5F9',
+                        borderColor: nightMode ? '#1E293B' : '#CBD5E1',
+                        borderWidth: 1,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                      },
+                    ]}>
+                    <Text style={{ color: themeColors.headerText, fontWeight: '700', fontSize: 14 }}>
+                      🇮🇳 +91 {userPhone || '9876543210'}
+                    </Text>
+                    <View
+                      style={{
+                        backgroundColor: '#10B981',
+                        paddingHorizontal: 8,
+                        paddingVertical: 3,
+                        borderRadius: 6,
+                      }}>
+                      <Text style={{ color: '#FFFFFF', fontSize: 10, fontWeight: '800' }}>VERIFIED SMS</Text>
+                    </View>
+                  </View>
+                </View>
+
+                {/* Membership & License Card */}
+                <View
+                  style={{
+                    backgroundColor: nightMode ? '#070D1E' : '#F1F5F9',
+                    padding: 12,
+                    borderRadius: 12,
+                    borderWidth: 1,
+                    borderColor: nightMode ? '#1E293B' : '#CBD5E1',
+                    gap: 6,
+                  }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={{ fontSize: 12, fontWeight: '800', color: themeColors.headerText }}>
+                      MEMBERSHIP STATUS
+                    </Text>
+                    <View
+                      style={{
+                        backgroundColor: subState.isSubscribed
+                          ? '#F59E0B'
+                          : subState.trialActive
+                            ? '#0284C7'
+                            : '#EF4444',
+                        paddingHorizontal: 8,
+                        paddingVertical: 2,
+                        borderRadius: 6,
+                      }}>
+                      <Text style={{ fontSize: 10, fontWeight: '800', color: '#FFFFFF' }}>
+                        {subState.isSubscribed
+                          ? 'PRO ACTIVATED'
+                          : subState.trialActive
+                            ? `${SubscriptionStore.getTrialDaysRemaining()} DAYS TRIAL`
+                            : 'TRIAL EXPIRED'}
+                      </Text>
+                    </View>
+                  </View>
+                  <Text style={{ fontSize: 11, color: nightMode ? '#94A3B8' : '#64748B' }}>
+                    {subState.isSubscribed
+                      ? 'Full offline Arabian sea charts & bathymetry unlocked.'
+                      : subState.trialActive
+                        ? 'Complimentary navigation trial active. Upgrade anytime for lifetime offline access.'
+                        : 'Trial has expired. Activate a plan to re-enable charts & GPS tools.'}
+                  </Text>
+                  {!subState.isSubscribed && (
+                    <TouchableOpacity
+                      activeOpacity={0.8}
+                      onPress={() => {
+                        setShowProfileModal(false);
+                        setPremiumModalVisible(true);
+                      }}
+                      style={{
+                        marginTop: 4,
+                        backgroundColor: '#F59E0B',
+                        paddingVertical: 8,
+                        borderRadius: 8,
+                        alignItems: 'center',
+                      }}>
+                      <Text style={{ color: '#0F172A', fontWeight: '800', fontSize: 12 }}>
+                        ⭐ UPGRADE TO PRO (UNLIMITED)
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {/* Buttons: Save & Sign Out */}
+                <View style={styles.settingsModalBtnRow}>
+                  {isLoggedIn ? (
+                    <TouchableOpacity
+                      activeOpacity={0.7}
+                      onPress={() => {
+                        setShowProfileModal(false);
+                        AuthStore.logout();
+                        router.replace('/login');
+                      }}
+                      style={[styles.settingsModalHalfBtn, { backgroundColor: '#EF4444' }]}>
+                      <Text style={[styles.settingsModalBtnText, { color: '#FFFFFF' }]}>🚪 Sign Out</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity
+                      activeOpacity={0.7}
+                      onPress={() => {
+                        setShowProfileModal(false);
+                        router.push('/login');
+                      }}
+                      style={[styles.settingsModalHalfBtn, { backgroundColor: '#0284C7' }]}>
+                      <Text style={[styles.settingsModalBtnText, { color: '#FFFFFF' }]}>⚓ Sign In</Text>
+                    </TouchableOpacity>
+                  )}
+
+                  <TouchableOpacity
+                    activeOpacity={0.7}
+                    onPress={() => {
+                      AuthStore.updateProfile(userName);
+                      setShowProfileModal(false);
+                    }}
+                    style={[styles.settingsModalHalfBtn, { backgroundColor: nightMode ? '#0284C7' : '#0288D1' }]}>
+                    <Text style={[styles.settingsModalBtnText, { color: '#FFFFFF' }]}>Save Profile</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </TouchableWithoutFeedback>
+          </View>
+        </TouchableWithoutFeedback>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -749,74 +907,118 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 14,
-    paddingTop: 6,
-    paddingBottom: 6,
+    paddingTop: 8,
+    paddingBottom: 8,
     gap: 8,
   },
 
-  /* Left Port Selector Button (Replaces 3D FIX badge) */
+  /* Left Port Selector Button (Maintains strict height & single line) */
   portSelectBtn: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    borderRadius: 16,
+    gap: 6,
+    height: 38,
+    paddingHorizontal: 12,
+    borderRadius: 12,
     borderWidth: 1.2,
-    maxWidth: 220,
+    maxWidth: 240,
   },
   portSelectIcon: {
-    fontSize: 16,
-  },
-  portSelectTextGroup: {
-    flex: 1,
-    gap: 1,
+    fontSize: 15,
   },
   portSelectTitle: {
-    fontSize: 12.5,
-    fontWeight: '900',
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '800',
     letterSpacing: 0.2,
-  },
-  portSelectSubtitle: {
-    fontSize: 10,
-    fontWeight: '600',
-    opacity: 0.8,
   },
   portSelectArrow: {
     fontSize: 12,
     fontWeight: '900',
   },
-
-  topRightControls: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  accountToggleBtn: {
-    paddingHorizontal: 11,
-    paddingVertical: 6,
-    borderRadius: 16,
+  profileBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     borderWidth: 1.2,
-    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  profileAvatarIcon: {
+    fontSize: 20,
+  },
+  profileOnlineDot: {
+    position: 'absolute',
+    top: 2,
+    right: 2,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: '#10B981',
+    borderWidth: 1,
+    borderColor: '#0B132B',
+  },
+
+  /* Settings-Style Captain Profile Modal Styles */
+  settingsModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  settingsModalCard: {
+    width: '100%',
+    maxWidth: 380,
+    borderRadius: 20,
+    padding: 20,
+    gap: 14,
+    borderWidth: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25,
+    shadowRadius: 10,
+    elevation: 8,
+  },
+  settingsModalTitle: {
+    fontSize: 18,
+    fontWeight: '900',
+  },
+  settingsModalSubtitle: {
+    fontSize: 12.5,
+    lineHeight: 17,
+  },
+  settingsInputGroup: {
     gap: 4,
   },
-  accountToggleText: {
-    fontSize: 11.5,
-    fontWeight: '900',
-    letterSpacing: 0.3,
+  settingsInputLabel: {
+    fontSize: 12,
+    fontWeight: '700',
   },
-  nightToggleBtn: {
-    paddingHorizontal: 11,
-    paddingVertical: 6,
-    borderRadius: 16,
-    borderWidth: 1.2,
+  settingsTextInput: {
+    height: 44,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    fontSize: 14,
+    fontWeight: '600',
   },
-  nightToggleText: {
-    fontSize: 11.5,
-    fontWeight: '900',
-    letterSpacing: 0.3,
+  settingsModalBtnRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 6,
+  },
+  settingsModalHalfBtn: {
+    flex: 1,
+    height: 44,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  settingsModalBtnText: {
+    fontSize: 14,
+    fontWeight: '800',
   },
 
   /* Modal Styles for Bandar Selection */

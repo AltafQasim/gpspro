@@ -114,6 +114,9 @@ export class SettingsStore {
     }
     if (typeof partial.voiceAnnounce === 'boolean') {
       VoiceService.setEnabled(partial.voiceAnnounce);
+      if (!partial.voiceAnnounce) {
+        VoiceService.stop();
+      }
     }
 
     // Persist to web storage if available

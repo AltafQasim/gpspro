@@ -232,7 +232,9 @@ export class GpsService {
 
     let lastHeadingTime = 0;
     let lastHeadingValue = -999;
-    const minIntervalMs = this.ecoMode ? 220 : 120; // Throttle to prevent 60fps bridge re-render battery drain
+    // 33ms (~30fps) for fluid native compass rotation across all devices
+    const minIntervalMs = this.ecoMode ? 140 : 33;
+    const minAngleDelta = this.ecoMode ? 0.8 : 0.2;
 
     try {
       this.headingSubscription = await Location.watchHeadingAsync((headingData) => {
@@ -241,8 +243,8 @@ export class GpsService {
           headingData.trueHeading >= 0 ? headingData.trueHeading : headingData.magHeading;
         if (typeof rawH === 'number' && !isNaN(rawH)) {
           const now = Date.now();
-          // Skip if under minInterval and angle change is tiny (< 0.8 deg)
-          if (now - lastHeadingTime < minIntervalMs && Math.abs(rawH - lastHeadingValue) < 0.8) {
+          // Skip if under minInterval and angle change is negligible
+          if (now - lastHeadingTime < minIntervalMs && Math.abs(rawH - lastHeadingValue) < minAngleDelta) {
             return;
           }
           lastHeadingTime = now;
@@ -263,7 +265,7 @@ export class GpsService {
           }
           if (h !== null && !isNaN(h)) {
             const now = Date.now();
-            if (now - lastHeadingTime < minIntervalMs && Math.abs(h - lastHeadingValue) < 0.8) {
+            if (now - lastHeadingTime < minIntervalMs && Math.abs(h - lastHeadingValue) < minAngleDelta) {
               return;
             }
             lastHeadingTime = now;

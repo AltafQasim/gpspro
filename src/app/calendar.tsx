@@ -1,23 +1,31 @@
 import { DynamicMoonView } from '@/components/marine/DynamicMoonView';
 import { BackButton } from '@/components/ui/back-button';
+import { GpsService, calculateDistanceKm } from '@/services/gpsService';
+import { MARINE_PORTS_DATABASE, MarinePortInfo } from '@/services/marineData';
 import { SettingsStore, SpeechLanguage } from '@/services/settingsStore';
 import { VoiceService } from '@/services/voiceService';
 import {
+  getAstronomicalTithi,
   getLocalizedTithiName,
   getMoonPhaseDetails,
   getSunTimingDetails,
+  MONTH_NAMES,
   MoonPhaseInfo,
   SunTimingInfo,
+  toGujaratiDigits,
+  toHindiDigits,
 } from '@/utils/astronomy';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Dimensions,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   TouchableWithoutFeedback,
   View,
@@ -38,143 +46,6 @@ const FALLBACK_MOON_IMAGE_URI =
   'https://images.unsplash.com/photo-1522030299830-16b8d3d049fe?w=1000&auto=format&fit=crop&q=95';
 
 const REAL_MOON_IMAGE_URI = PRIMARY_MOON_IMAGE_URI;
-
-// Coastal Fishing Ports Configuration for Western India / Gujarat
-export interface CoastalPort {
-  id: string;
-  name: string;
-  nameGu: string;
-  nameHi: string;
-  region: string;
-  coords: string;
-  moonOffsetMin: number;
-  sunOffsetMin: number;
-  tideCharacteristics: string;
-  highWaterMeters: number;
-}
-
-export const COASTAL_PORTS: CoastalPort[] = [
-  {
-    id: 'veraval',
-    name: 'Veraval Port',
-    nameGu: 'વેરાવળ બંદર',
-    nameHi: 'वेरावल बंदरगाह',
-    region: 'Saurashtra Coast',
-    coords: '20°54\'N, 70°22\'E',
-    moonOffsetMin: 0,
-    sunOffsetMin: 0,
-    tideCharacteristics: 'Baseline Indian Spring Tide (Juvar/Bhanj)',
-    highWaterMeters: 3.2,
-  },
-  {
-    id: 'diu',
-    name: 'Diu (Vanjiya)',
-    nameGu: 'દીવ વાંછીયા બારા',
-    nameHi: 'दीव (वाणिज्य)',
-    region: 'Diu Coast',
-    coords: '20°42\'N, 70°59\'E',
-    moonOffsetMin: 4,
-    sunOffsetMin: 3,
-    tideCharacteristics: 'Active Tidal Current & Channel Surge',
-    highWaterMeters: 3.4,
-  },
-  {
-    id: 'porbandar',
-    name: 'Porbandar Port',
-    nameGu: 'પોરબંદર બંદર',
-    nameHi: 'पोरबंदर बंदरगाह',
-    region: 'Western Seaboard',
-    coords: '21°38\'N, 69°36\'E',
-    moonOffsetMin: -6,
-    sunOffsetMin: -5,
-    tideCharacteristics: 'Deep Open Sea & High Swell Waters',
-    highWaterMeters: 3.0,
-  },
-  {
-    id: 'mangrol',
-    name: 'Mangrol Harbor',
-    nameGu: 'માંગરોળ બંદર',
-    nameHi: 'मांगरोल हार्बर',
-    region: 'Saurashtra Coast',
-    coords: '21°07\'N, 70°07\'E',
-    moonOffsetMin: -2,
-    sunOffsetMin: -2,
-    tideCharacteristics: 'Sandbar Inflow & Steady Juvar',
-    highWaterMeters: 3.1,
-  },
-  {
-    id: 'jafrabad',
-    name: 'Jafrabad Port',
-    nameGu: 'જાફરાબાદ બંદર',
-    nameHi: 'जाफराबाद बंदरगाह',
-    region: 'Amreli Coast',
-    coords: '20°52\'N, 71°22\'E',
-    moonOffsetMin: 9,
-    sunOffsetMin: 7,
-    tideCharacteristics: 'Creek Protected Fast Influx',
-    highWaterMeters: 3.8,
-  },
-  {
-    id: 'okha',
-    name: 'Okha / Dwarka',
-    nameGu: 'ઓખા / દ્વારકા બંદર',
-    nameHi: 'ओखा / द्वारका',
-    region: 'Gulf of Kutch Entry',
-    coords: '22°28\'N, 69°04\'E',
-    moonOffsetMin: -12,
-    sunOffsetMin: -9,
-    tideCharacteristics: 'Turbulent Headland Currents & High Tidal Range',
-    highWaterMeters: 4.1,
-  },
-  {
-    id: 'bhavnagar',
-    name: 'Bhavnagar (GOP)',
-    nameGu: 'ભાવનગર (ઘોઘા / ગોપ)',
-    nameHi: 'भावनगर (गल्प)',
-    region: 'Gulf of Khambhat',
-    coords: '21°46\'N, 72°09\'E',
-    moonOffsetMin: 26,
-    sunOffsetMin: 18,
-    tideCharacteristics: 'Extreme Tidal Bore Surge (10.5m Macrotidal)',
-    highWaterMeters: 10.5,
-  },
-  {
-    id: 'mumbai',
-    name: 'Mumbai (Sassoon Dock)',
-    nameGu: 'મુંબઈ (સાસૂન ડૉક)',
-    nameHi: 'मुंबई (ससून डॉक)',
-    region: 'Maharashtra Coast',
-    coords: '18°55\'N, 72°49\'E',
-    moonOffsetMin: -14,
-    sunOffsetMin: -10,
-    tideCharacteristics: 'Continental Shelf Marine Fleet Harbor',
-    highWaterMeters: 4.8,
-  },
-  {
-    id: 'kandla',
-    name: 'Kandla Harbor',
-    nameGu: 'કંડલા બંદર',
-    nameHi: 'कांडला बंदरगाह',
-    region: 'Gulf of Kutch',
-    coords: '23°00\'N, 70°13\'E',
-    moonOffsetMin: 11,
-    sunOffsetMin: 8,
-    tideCharacteristics: 'Deep Gulf Macro Channel Flow',
-    highWaterMeters: 6.2,
-  },
-  {
-    id: 'mandvi',
-    name: 'Mandvi Port',
-    nameGu: 'માંડવી (કચ્છ)',
-    nameHi: 'मांडवी (कच्छ)',
-    region: 'Kutch Seaboard',
-    coords: '22°50\'N, 69°21\'E',
-    moonOffsetMin: -8,
-    sunOffsetMin: -6,
-    tideCharacteristics: 'Shallow Coastal Fishery Waters',
-    highWaterMeters: 3.3,
-  },
-];
 
 // Helper to convert 24h "HH:MM" to 12h "hh:mm AM/PM"
 export function format24to12(timeStr: string): string {
@@ -223,6 +94,8 @@ interface CalendarDay {
   day: number;
   tithiNum: string;
   tithiName: string;
+  tithiNameGu?: string;
+  tithiNameHi?: string;
   illumination: number; // 0 to 100%
   phaseName: string;
   isSpecial?: boolean;
@@ -233,6 +106,11 @@ interface CalendarDay {
   sunSet: string;
   tideCondition: string;
   tideType: 'Juvar' | 'Bhanj' | 'Normal';
+  isPoonam?: boolean;
+  isAmas?: boolean;
+  isBaras?: boolean;
+  isChaudas?: boolean;
+  dateStr?: string;
 }
 
 // 30 Days of September 2026 (Preserved previous calendar data)
@@ -642,21 +520,63 @@ const DAYS_DATA: (CalendarDay | null)[] = [
   },
 ];
 
-// Helper to determine if a date is waxing (Sud paksha) or waning (Vad paksha)
-export function isDateWaxing(day: number): boolean {
-  if (day >= 1 && day <= 11) return true; // Waxing towards Poonam
-  if (day >= 27 && day <= 30) return true; // Waxing after Amas
-  return false; // Waning (Day 12 to 26)
-}
+/**
+ * Dynamically generates 100% accurate calendar grid and astronomical details
+ * for any given month and year at the specified port's geographic coordinates.
+ */
+export function generateMonthCalendarDays(
+  year: number,
+  month: number, // 0-indexed: 0=Jan, 9=Oct
+  portLat: number,
+  portLon: number
+): (CalendarDay | null)[] {
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const firstDayWeekday = new Date(year, month, 1).getDay(); // 0=Sun, 1=Mon...
+  const grid: (CalendarDay | null)[] = [];
 
-// Calculate exact astronomical phase (0.0 = New Moon / Amas, 0.5 = Full Moon / Poonam)
-export function getPhaseForDay(day: number, illumination: number): number {
-  const waxing = isDateWaxing(day);
-  if (waxing) {
-    return (illumination / 100) * 0.5;
-  } else {
-    return 0.5 + (1 - illumination / 100) * 0.5;
+  // Empty leading cells for weekday offset
+  for (let i = 0; i < firstDayWeekday; i++) {
+    grid.push(null);
   }
+
+  // Days of the month
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateObj = new Date(year, month, d, 12, 0, 0);
+    const astroMoon = getMoonPhaseDetails(dateObj, portLat, portLon);
+    const astroSun = getSunTimingDetails(dateObj, portLat, portLon);
+    const tithi = getAstronomicalTithi(dateObj);
+
+    let specialColor: 'yellow' | 'green' | 'blue' | 'purple' = 'blue';
+    if (tithi.isPoonam) specialColor = 'yellow';
+    else if (tithi.isAmas) specialColor = 'purple';
+    else if (tithi.isChaudas) specialColor = 'green';
+    else if (tithi.isBaras) specialColor = 'yellow';
+
+    grid.push({
+      day: d,
+      tithiNum: tithi.numGu,
+      tithiName: tithi.nameEn,
+      tithiNameGu: tithi.nameGu,
+      tithiNameHi: tithi.nameHi,
+      illumination: astroMoon.illumination,
+      phaseName: astroMoon.phaseNameEn,
+      isSpecial: tithi.isSpecial,
+      specialColor,
+      moonRise: astroMoon.moonrise,
+      moonSet: astroMoon.moonset,
+      sunRise: astroSun.sunrise,
+      sunSet: astroSun.sunset,
+      tideCondition: tithi.tideCondition,
+      tideType: tithi.tideType,
+      isPoonam: tithi.isPoonam,
+      isAmas: tithi.isAmas,
+      isBaras: tithi.isBaras,
+      isChaudas: tithi.isChaudas,
+      dateStr: `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`,
+    });
+  }
+
+  return grid;
 }
 
 export default function CalendarScreen() {
@@ -667,16 +587,65 @@ export default function CalendarScreen() {
   const [language, setLanguage] = useState<SpeechLanguage>(() => SettingsStore.getSettings().ttsLang);
   const [voiceEnabled, setVoiceEnabled] = useState<boolean>(() => SettingsStore.getSettings().voiceAnnounce);
 
-  // Selected Day State: Default to today's date so the current day is immediately visible
-  const [selectedDay, setSelectedDay] = useState<number>(() => {
-    const today = new Date();
-    return Math.min(30, Math.max(1, today.getDate()));
-  });
+  // Dynamic Year, Month, and Selected Day (defaults to today's real date)
+  const today = useMemo(() => new Date(), []);
+  const [currentYear, setCurrentYear] = useState<number>(() => today.getFullYear());
+  const [currentMonth, setCurrentMonth] = useState<number>(() => today.getMonth());
+  const [selectedDay, setSelectedDay] = useState<number>(() => today.getDate());
   const [moonImgUri, setMoonImgUri] = useState<string>(PRIMARY_MOON_IMAGE_URI);
 
-  // Selected Port
-  const [selectedPort, setSelectedPort] = useState<CoastalPort>(COASTAL_PORTS[0]); // Veraval
+  // Global Active Port Selection State (Synchronized across all screens)
+  const [selectedPortId, setSelectedPortId] = useState<string>(() => SettingsStore.getSelectedPortId());
   const [showPortModal, setShowPortModal] = useState<boolean>(false);
+  const [portSearchText, setPortSearchText] = useState<string>('');
+  const [currentGps, setCurrentGps] = useState<{ latitude: number; longitude: number } | null>(null);
+
+  useEffect(() => {
+    const last = GpsService.getLastTelemetry();
+    if (last) {
+      setCurrentGps({ latitude: last.latitude, longitude: last.longitude });
+    }
+    GpsService.getCurrentLocationAsync().then((loc) => {
+      if (loc) {
+        setCurrentGps({ latitude: loc.latitude, longitude: loc.longitude });
+      }
+    });
+  }, []);
+
+  const selectedPort: MarinePortInfo = useMemo(() => {
+    return (
+      MARINE_PORTS_DATABASE.find((p) => p.id === selectedPortId) ||
+      MARINE_PORTS_DATABASE[0]
+    );
+  }, [selectedPortId]);
+
+  // Filtered & Distance-Sorted Ports List for the Modal
+  const filteredAndSortedPorts = useMemo(() => {
+    const query = portSearchText.trim().toLowerCase();
+    const list = MARINE_PORTS_DATABASE.map((p) => {
+      const distanceKm = currentGps
+        ? calculateDistanceKm(currentGps.latitude, currentGps.longitude, p.lat, p.lon)
+        : null;
+      return { ...p, distanceKm };
+    });
+
+    const filtered = query
+      ? list.filter(
+          (p) =>
+            p.name.toLowerCase().includes(query) ||
+            p.nameGu.toLowerCase().includes(query) ||
+            (p.nameHi && p.nameHi.toLowerCase().includes(query)) ||
+            p.region.toLowerCase().includes(query) ||
+            p.regionGu.toLowerCase().includes(query) ||
+            p.id.toLowerCase().includes(query)
+        )
+      : list;
+
+    if (currentGps) {
+      return [...filtered].sort((a, b) => (a.distanceKm ?? 99999) - (b.distanceKm ?? 99999));
+    }
+    return filtered;
+  }, [portSearchText, currentGps]);
 
   // Manual Calibration Offsets
   const [moonRiseOffset, setMoonRiseOffset] = useState<number>(0);
@@ -686,14 +655,15 @@ export default function CalendarScreen() {
   // Live Voice Announcement Subtitle Bar
   const [liveAnnouncement, setLiveAnnouncement] = useState<string>('');
 
-  const todayDayNum = useMemo(() => new Date().getDate(), []);
-
   useEffect(() => {
     const unsubSettings = SettingsStore.subscribe((s) => {
       setIsNight(SettingsStore.isNightMode());
       setLanguage(s.ttsLang);
       VoiceService.setLanguage(s.ttsLang);
       setVoiceEnabled(s.voiceAnnounce);
+      if (s.selectedPortId && s.selectedPortId !== selectedPortId) {
+        setSelectedPortId(s.selectedPortId);
+      }
     });
 
     const unsubVoice = VoiceService.subscribe((text) => {
@@ -704,42 +674,87 @@ export default function CalendarScreen() {
       unsubSettings();
       unsubVoice();
     };
-  }, []);
+  }, [selectedPortId]);
 
   // Keep VoiceService in sync whenever local language state changes
   useEffect(() => {
     VoiceService.setLanguage(language);
   }, [language]);
 
-  const currentDayData: CalendarDay =
-    DAYS_DATA.find((d) => d && d.day === selectedDay) || (DAYS_DATA[12] as CalendarDay);
+  // Generate dynamic calendar days for currentYear, currentMonth, and selectedPort
+  const monthDays = useMemo(() => {
+    return generateMonthCalendarDays(currentYear, currentMonth, selectedPort.lat, selectedPort.lon);
+  }, [currentYear, currentMonth, selectedPort.lat, selectedPort.lon]);
+
+  const daysInThisMonth = useMemo(() => {
+    return new Date(currentYear, currentMonth + 1, 0).getDate();
+  }, [currentYear, currentMonth]);
+
+  // Clamp selectedDay to valid range in this month
+  const validSelectedDay = Math.min(selectedDay, daysInThisMonth);
+
+  const currentDayData: CalendarDay = useMemo(() => {
+    const found = monthDays.find((d) => d && d.day === validSelectedDay);
+    if (found) return found;
+    const firstValid = monthDays.find((d) => d !== null);
+    return firstValid as CalendarDay;
+  }, [monthDays, validSelectedDay]);
 
   // High-precision Marine Astronomical calculation for the selected date
-  const selectedDateObj = new Date(2026, 8, selectedDay, 12, 0, 0);
-  const astroMoon: MoonPhaseInfo = getMoonPhaseDetails(
-    selectedDateObj,
-    selectedPort.lat,
-    selectedPort.lon
-  );
-  const astroSun: SunTimingInfo = getSunTimingDetails(
-    selectedDateObj,
-    selectedPort.lat,
-    selectedPort.lon
-  );
+  const selectedDateObj = useMemo(() => {
+    return new Date(currentYear, currentMonth, validSelectedDay, 12, 0, 0);
+  }, [currentYear, currentMonth, validSelectedDay]);
+
+  const astroMoon: MoonPhaseInfo = useMemo(() => {
+    return getMoonPhaseDetails(selectedDateObj, selectedPort.lat, selectedPort.lon);
+  }, [selectedDateObj, selectedPort.lat, selectedPort.lon]);
+
+  const astroSun: SunTimingInfo = useMemo(() => {
+    return getSunTimingDetails(selectedDateObj, selectedPort.lat, selectedPort.lon);
+  }, [selectedDateObj, selectedPort.lat, selectedPort.lon]);
 
   const currentPhase = astroMoon.phase;
   const isWaxing = astroMoon.isWaxing;
   const illumination = astroMoon.illumination;
 
+  const isCurrentMonthView =
+    currentYear === today.getFullYear() && currentMonth === today.getMonth();
+
+  const handlePrevMonth = () => {
+    if (currentMonth === 0) {
+      setCurrentYear((y) => y - 1);
+      setCurrentMonth(11);
+    } else {
+      setCurrentMonth((m) => m - 1);
+    }
+    setSelectedDay(1);
+  };
+
+  const handleNextMonth = () => {
+    if (currentMonth === 11) {
+      setCurrentYear((y) => y + 1);
+      setCurrentMonth(0);
+    } else {
+      setCurrentMonth((m) => m + 1);
+    }
+    setSelectedDay(1);
+  };
+
+  const handleJumpToToday = () => {
+    const now = new Date();
+    setCurrentYear(now.getFullYear());
+    setCurrentMonth(now.getMonth());
+    setSelectedDay(now.getDate());
+  };
+
   // Handle Day Selection with Strictly Language-Based Voice Announcement
   const handleSelectDay = (day: number) => {
-    const dayItem = DAYS_DATA.find((d) => d && d.day === day);
+    setSelectedDay(day);
+    const dayItem = monthDays.find((d) => d && d.day === day);
     if (!dayItem) return;
 
-    setSelectedDay(day);
-
     if (voiceEnabled) {
-      const dayDate = new Date(2026, 8, day, 12, 0, 0);
+      const dayDate = new Date(currentYear, currentMonth, day, 12, 0, 0);
       const dayAstro = getMoonPhaseDetails(
         dayDate,
         selectedPort.lat,
@@ -747,9 +762,13 @@ export default function CalendarScreen() {
       );
       VoiceService.announceCalendarDate({
         day,
+        year: currentYear,
+        monthEn: MONTH_NAMES.English[currentMonth],
+        monthGu: MONTH_NAMES.Gujarati[currentMonth],
+        monthHi: MONTH_NAMES.Hindi[currentMonth],
         tithiName: dayItem.tithiName,
-        tithiNameGu: getLocalizedTithiName(dayItem.tithiName, 'Gujarati'),
-        tithiNameHi: getLocalizedTithiName(dayItem.tithiName, 'Hindi'),
+        tithiNameGu: dayItem.tithiNameGu,
+        tithiNameHi: dayItem.tithiNameHi,
         illumination: dayAstro.illumination,
         portNameEn: selectedPort.name,
         portNameGu: selectedPort.nameGu,
@@ -797,9 +816,11 @@ export default function CalendarScreen() {
   };
 
   // Port Selection (Strictly Language-Based)
-  const handleSelectPort = (port: CoastalPort) => {
-    setSelectedPort(port);
+  const handleSelectPort = (port: MarinePortInfo) => {
+    SettingsStore.setSelectedPortId(port.id);
+    setSelectedPortId(port.id);
     setShowPortModal(false);
+    setPortSearchText('');
 
     if (voiceEnabled) {
       const portName =
@@ -817,7 +838,7 @@ export default function CalendarScreen() {
   };
 
   const getWeekDay = (d: number) => {
-    const dateObj = new Date(2026, 8, d, 12, 0, 0);
+    const dateObj = new Date(currentYear, currentMonth, d, 12, 0, 0);
     const dayIdx = dateObj.getDay();
     if (language === 'Gujarati') {
       const daysGu = ['રવિવાર', 'સોમવાર', 'મંગળવાર', 'બુધવાર', 'ગુરુવાર', 'શુક્રવાર', 'શનિવાર'];
@@ -834,20 +855,14 @@ export default function CalendarScreen() {
   // Accurate Port Adjusted Astronomical Times based on dynamic calculations
   const effectiveMoonRise = adjustTimeString(
     astroMoon.moonrise,
-    selectedPort.moonOffsetMin + moonRiseOffset
+    moonRiseOffset
   );
   const effectiveMoonSet = adjustTimeString(
     astroMoon.moonset,
-    selectedPort.moonOffsetMin + moonSetOffset
+    moonSetOffset
   );
-  const effectiveSunRise = adjustTimeString(
-    astroSun.sunrise,
-    selectedPort.sunOffsetMin
-  );
-  const effectiveSunSet = adjustTimeString(
-    astroSun.sunset,
-    selectedPort.sunOffsetMin
-  );
+  const effectiveSunRise = astroSun.sunrise;
+  const effectiveSunSet = astroSun.sunset;
 
   // Theme Colors
   const colors = isNight
@@ -905,6 +920,9 @@ export default function CalendarScreen() {
             onPress={() => {
               const next = !voiceEnabled;
               setVoiceEnabled(next);
+              if (!next) {
+                VoiceService.stop();
+              }
               SettingsStore.updateSettings({ voiceAnnounce: next });
             }}
             style={[styles.headerVoiceBtn, { backgroundColor: colors.pillBg }]}>
@@ -926,47 +944,106 @@ export default function CalendarScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}>
 
-        {/* 1. PORT SELECTION BAR */}
+        {/* 1. PORT SELECTION DROPDOWN (Matches Home Screen) */}
         <TouchableOpacity
-          activeOpacity={0.8}
+          activeOpacity={0.75}
           onPress={() => setShowPortModal(true)}
-          style={[styles.portBanner, { backgroundColor: colors.cardBg, borderColor: colors.cardBorder }]}>
-          <View style={styles.portBannerLeft}>
-            <View style={styles.portIconBubble}>
-              <Text style={styles.portIconText}>⚓</Text>
-            </View>
-            <View style={styles.portBannerInfo}>
-              <Text style={[styles.portLabelText, { color: colors.textSecondary }]}>
-                CALIBRATED FISHING PORT:
-              </Text>
-              <Text style={[styles.portNameText, { color: colors.textPrimary }]}>
-                {selectedPort.name} ({selectedPort.nameGu})
-              </Text>
-              <Text style={[styles.portCoordsText, { color: colors.accentCyan }]}>
-                {selectedPort.coords} • High Tide: {selectedPort.highWaterMeters}m
-              </Text>
-            </View>
+          style={[
+            styles.portSelectBtn,
+            {
+              backgroundColor: isNight
+                ? 'rgba(0, 229, 255, 0.12)'
+                : 'rgba(2, 136, 209, 0.10)',
+              borderColor: isNight
+                ? 'rgba(0, 229, 255, 0.35)'
+                : 'rgba(2, 136, 209, 0.30)',
+            },
+          ]}>
+          <Text style={styles.portSelectIcon}>⚓</Text>
+          <View style={styles.portSelectTextGroup}>
+            <Text
+              numberOfLines={1}
+              style={[
+                styles.portSelectTitle,
+                { color: isNight ? '#00E5FF' : '#0288D1' },
+              ]}>
+              {selectedPort.nameGu}
+            </Text>
+            <Text
+              numberOfLines={1}
+              style={[
+                styles.portSelectSubtitle,
+                { color: colors.textPrimary },
+              ]}>
+              {selectedPort.name} • {selectedPort.regionGu || selectedPort.region}
+            </Text>
           </View>
-          <View style={styles.changePortBadge}>
-            <Text style={styles.changePortText}>Change ▾</Text>
-          </View>
+          <Text
+            style={[
+              styles.portSelectArrow,
+              { color: isNight ? '#00E5FF' : '#0288D1' },
+            ]}>
+            ▾
+          </Text>
         </TouchableOpacity>
 
         {/* 2. MONTH HEADER & 30-DAY CALENDAR GRID */}
         <View style={[styles.calendarCard, { backgroundColor: colors.cardBg, borderColor: colors.cardBorder }]}>
           <View style={styles.calendarMonthHeader}>
-            <View style={styles.monthTitleRow}>
-              <Text style={styles.monthBadgeEmoji}>🌊</Text>
-              <Text style={[styles.monthTitleText, { color: colors.textPrimary }]}>
-                September 2026
-              </Text>
-              <View style={styles.marineBadge}>
-                <Text style={styles.marineBadgeText}>{selectedPort.name.toUpperCase()} TIDES</Text>
+            <View style={styles.monthNavRow}>
+              <TouchableOpacity
+                onPress={handlePrevMonth}
+                style={[styles.monthNavBtn, { backgroundColor: isNight ? '#1E293B' : '#E2E8F0' }]}
+                activeOpacity={0.7}
+                accessibilityLabel="Previous Month"
+              >
+                <Text style={[styles.monthNavArrow, { color: colors.textPrimary }]}>◀</Text>
+              </TouchableOpacity>
+
+              <View style={styles.monthTitleCenter}>
+                <View style={styles.monthTitleRow}>
+                  <Text style={styles.monthBadgeEmoji}>🌊</Text>
+                  <Text style={[styles.monthTitleText, { color: colors.textPrimary }]}>
+                    {language === 'Gujarati'
+                      ? `${MONTH_NAMES.Gujarati[currentMonth]} ${toGujaratiDigits(currentYear)}`
+                      : language === 'Hindi'
+                        ? `${MONTH_NAMES.Hindi[currentMonth]} ${toHindiDigits(currentYear)}`
+                        : `${MONTH_NAMES.English[currentMonth]} ${currentYear}`}
+                  </Text>
+                  <View style={styles.marineBadge}>
+                    <Text style={styles.marineBadgeText}>{selectedPort.name.toUpperCase()} TIDES</Text>
+                  </View>
+                </View>
+                <Text style={[styles.monthSubtitle, { color: colors.textSecondary }]}>
+                  {language === 'Gujarati'
+                    ? 'શુક્લ / કૃષ્ણ પક્ષ • તિથિ અને જુવાર ચક્ર'
+                    : language === 'Hindi'
+                      ? 'शुक्ल / कृष्ण पक्ष • तिथि एवं ज्वार चक्र'
+                      : 'Shukla / Krishna Paksha • Tithi & Juvar Cycles'}
+                </Text>
               </View>
+
+              <TouchableOpacity
+                onPress={handleNextMonth}
+                style={[styles.monthNavBtn, { backgroundColor: isNight ? '#1E293B' : '#E2E8F0' }]}
+                activeOpacity={0.7}
+                accessibilityLabel="Next Month"
+              >
+                <Text style={[styles.monthNavArrow, { color: colors.textPrimary }]}>▶</Text>
+              </TouchableOpacity>
             </View>
-            <Text style={[styles.monthSubtitle, { color: colors.textSecondary }]}>
-              Bhadrapada Shukla / Krishna Paksha • Tithi & Juvar Cycles
-            </Text>
+
+            {!isCurrentMonthView && (
+              <TouchableOpacity
+                onPress={handleJumpToToday}
+                style={styles.jumpTodayBtn}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.jumpTodayText}>
+                  📅 {language === 'Gujarati' ? 'આજની તારીખ પર જાઓ' : language === 'Hindi' ? 'आज की तारीख पर जाएं' : 'Jump to Today'}
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
 
           {/* Weekday Names Header */}
@@ -986,17 +1063,20 @@ export default function CalendarScreen() {
 
           {/* Days Grid */}
           <View style={styles.daysGrid}>
-            {DAYS_DATA.map((item, index) => {
+            {monthDays.map((item, index) => {
               if (!item) {
                 return <View key={`empty-${index}`} style={styles.dayCellEmpty} />;
               }
 
-              const isSelected = selectedDay === item.day;
-              const isToday = item.day === todayDayNum;
-              const isPoonam = item.day === 11;
-              const isAmas = item.day === 26;
-              const isBaras = item.day === 8 || item.day === 23;
-              const isChaudas = item.day === 10 || item.day === 25;
+              const isSelected = validSelectedDay === item.day;
+              const isToday =
+                currentYear === today.getFullYear() &&
+                currentMonth === today.getMonth() &&
+                item.day === today.getDate();
+              const isPoonam = item.isPoonam;
+              const isAmas = item.isAmas;
+              const isBaras = item.isBaras;
+              const isChaudas = item.isChaudas;
 
               return (
                 <TouchableOpacity
@@ -1085,15 +1165,16 @@ export default function CalendarScreen() {
           <View style={styles.detailHeaderRow}>
             <View style={styles.detailHeaderLeft}>
               <Text style={[styles.selectedDateTitle, { color: colors.textPrimary }]}>
-                {`2026-09-${selectedDay.toString().padStart(2, '0')}`} ({getWeekDay(selectedDay)})
-                {selectedDay === todayDayNum && (
+                {`${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-${validSelectedDay.toString().padStart(2, '0')}`} ({getWeekDay(validSelectedDay)})
+                {currentYear === today.getFullYear() && currentMonth === today.getMonth() && validSelectedDay === today.getDate() && (
                   <Text style={{ color: '#00E5FF', fontWeight: '900' }}>
                     {' '}• {language === 'Gujarati' ? 'આજે' : language === 'Hindi' ? 'आज' : 'Today'}
                   </Text>
                 )}
               </Text>
               <Text style={[styles.tithiSubTitle, { color: colors.accentBlue }]}>
-                Tithi: {currentDayData.tithiNum} ({currentDayData.tithiName}) •{' '}
+                {language === 'Gujarati' ? 'તિથિ: ' : language === 'Hindi' ? 'तिथि: ' : 'Tithi: '}
+                {currentDayData.tithiNum} ({language === 'Gujarati' ? currentDayData.tithiNameGu : language === 'Hindi' ? currentDayData.tithiNameHi : currentDayData.tithiName}) •{' '}
                 {language === 'Gujarati'
                   ? astroMoon.phaseNameGu
                   : language === 'Hindi'
@@ -1415,65 +1496,232 @@ export default function CalendarScreen() {
         </View>
       </ScrollView>
 
-      {/* PORT SELECTOR MODAL */}
+      {/* GUJARAT ALL BANDARS SELECTOR MODAL WITH GPS DISTANCE (KM) & SEARCH (Exact Match to Home Screen) */}
       <Modal visible={showPortModal} transparent animationType="slide">
         <TouchableWithoutFeedback onPress={() => setShowPortModal(false)}>
           <View style={styles.modalBackdrop}>
-            <TouchableWithoutFeedback>
-              <View style={[styles.portPickerCard, { backgroundColor: colors.cardBg }]}>
-                <View style={styles.portModalHeader}>
-                  <Text style={[styles.portPickerTitle, { color: colors.textPrimary }]}>
-                    ⚓ Select Coastal Fishing Port
-                  </Text>
-                  <Text style={[styles.portPickerSub, { color: colors.textSecondary }]}>
-                    Choose port for accurate astronomical times & tides
-                  </Text>
+            <TouchableWithoutFeedback onPress={() => {}}>
+              <View
+                style={[
+                  styles.bandarModalCard,
+                  {
+                    backgroundColor: colors.cardBg,
+                    borderColor: isNight ? '#1F2937' : '#E2E8F0',
+                  },
+                ]}>
+                {/* Header */}
+                <View style={styles.bandarModalHeader}>
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      style={[
+                        styles.bandarModalTitle,
+                        { color: colors.textPrimary },
+                      ]}>
+                      ⚓ ગુજરાતના તમામ બંદરો ({MARINE_PORTS_DATABASE.length})
+                    </Text>
+                    <Text
+                      style={[
+                        styles.bandarModalSubtitle,
+                        { color: isNight ? '#38BDF8' : '#0288D1' },
+                      ]}>
+                      {currentGps
+                        ? `📍 તમારું સ્થાન: ${currentGps.latitude.toFixed(2)}°N, ${currentGps.longitude.toFixed(2)}°E • નજીકનું બંદર પહેલાં`
+                        : '📍 GPS લોકેશન આધારે કિલોમીટર (km) ગણતરી'}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => setShowPortModal(false)}
+                    style={[
+                      styles.modalCloseBtn,
+                      {
+                        backgroundColor: isNight
+                          ? 'rgba(255, 255, 255, 0.08)'
+                          : '#E2E8F0',
+                      },
+                    ]}>
+                    <Text
+                      style={[
+                        styles.modalCloseText,
+                        { color: colors.textPrimary },
+                      ]}>
+                      ✕
+                    </Text>
+                  </TouchableOpacity>
                 </View>
 
-                <ScrollView style={styles.portListScroll} showsVerticalScrollIndicator={false}>
-                  {COASTAL_PORTS.map((p) => {
-                    const isSelected = selectedPort.id === p.id;
-                    return (
-                      <TouchableOpacity
-                        key={p.id}
-                        activeOpacity={0.7}
-                        onPress={() => handleSelectPort(p)}
+                {/* Search Bar */}
+                <View
+                  style={[
+                    styles.bandarSearchBox,
+                    {
+                      backgroundColor: isNight ? '#0D1117' : '#FFFFFF',
+                      borderColor: isNight ? '#30363D' : '#CBD5E1',
+                    },
+                  ]}>
+                  <Text style={styles.searchIconText}>🔍</Text>
+                  <TextInput
+                    value={portSearchText}
+                    onChangeText={setPortSearchText}
+                    placeholder="બંદર શોધો / Search bandar name..."
+                    placeholderTextColor={isNight ? '#8B949E' : '#64748B'}
+                    style={[
+                      styles.bandarSearchInput,
+                      { color: colors.textPrimary },
+                    ]}
+                    autoCorrect={false}
+                    clearButtonMode="while-editing"
+                  />
+                  {portSearchText.length > 0 && (
+                    <TouchableOpacity
+                      onPress={() => setPortSearchText('')}
+                      style={styles.searchClearBtn}>
+                      <Text
                         style={[
-                          styles.portListItem,
-                          isSelected && { backgroundColor: isNight ? '#1E293B' : '#E0F7FA' },
+                          styles.searchClearText,
+                          { color: isNight ? '#8B949E' : '#64748B' },
                         ]}>
-                        <View style={styles.portListItemLeft}>
-                          <Text style={styles.portListEmoji}>⚓</Text>
-                          <View style={styles.portListDetails}>
-                            <Text
-                              style={[
-                                styles.portListName,
-                                { color: isSelected ? colors.accentBlue : colors.textPrimary },
-                              ]}>
-                              {p.name} ({p.nameGu})
-                            </Text>
-                            <Text style={[styles.portListCoords, { color: colors.textSecondary }]}>
-                              {p.coords} • {p.region}
-                            </Text>
-                            <Text style={[styles.portListTide, { color: colors.accentCyan }]}>
-                              {p.tideCharacteristics}
-                            </Text>
-                          </View>
-                        </View>
-                        {isSelected && (
-                          <Text style={[styles.portCheckmark, { color: colors.accentBlue }]}>✓</Text>
-                        )}
-                      </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
+                        ✕
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
 
-                <TouchableOpacity
-                  activeOpacity={0.7}
-                  onPress={() => setShowPortModal(false)}
-                  style={[styles.modalCloseBtn, { backgroundColor: colors.pillBg }]}>
-                  <Text style={[styles.modalCloseText, { color: colors.textPrimary }]}>Done</Text>
-                </TouchableOpacity>
+                {/* Scrollable Bandar List */}
+                <ScrollView
+                  style={styles.bandarScrollView}
+                  contentContainerStyle={styles.bandarScrollContent}
+                  showsVerticalScrollIndicator={true}
+                  keyboardShouldPersistTaps="handled">
+                  {filteredAndSortedPorts.length === 0 ? (
+                    <View style={styles.emptyPortView}>
+                      <Text style={{ fontSize: 28 }}>⚓</Text>
+                      <Text
+                        style={[
+                          styles.emptyPortText,
+                          { color: isNight ? '#8B949E' : '#64748B' },
+                        ]}>
+                        કોઈ બંદર મળ્યું નથી ("{portSearchText}")
+                      </Text>
+                    </View>
+                  ) : (
+                    filteredAndSortedPorts.map((item, idx) => {
+                      const isSelected = selectedPortId === item.id;
+                      const isClosest =
+                        idx === 0 &&
+                        currentGps !== null &&
+                        item.distanceKm !== null;
+
+                      return (
+                        <TouchableOpacity
+                          key={item.id}
+                          activeOpacity={0.7}
+                          onPress={() => {
+                            SettingsStore.setSelectedPortId(item.id);
+                            setSelectedPortId(item.id);
+                            setShowPortModal(false);
+                            setPortSearchText('');
+                          }}
+                          style={[
+                            styles.bandarItemCard,
+                            {
+                              backgroundColor: isSelected
+                                ? isNight
+                                  ? 'rgba(0, 229, 255, 0.12)'
+                                  : 'rgba(2, 136, 209, 0.12)'
+                                : isNight
+                                ? '#0D1117'
+                                : '#FFFFFF',
+                              borderColor: isSelected
+                                ? '#0288D1'
+                                : isNight
+                                ? '#21262D'
+                                : '#E2E8F0',
+                              borderWidth: isSelected ? 1.5 : 1,
+                            },
+                          ]}>
+                          <View style={styles.bandarItemLeft}>
+                            <View
+                              style={[
+                                styles.bandarIconCircle,
+                                {
+                                  backgroundColor: isSelected
+                                    ? '#0288D1'
+                                    : isNight
+                                    ? '#161B22'
+                                    : '#E2E8F0',
+                                },
+                              ]}>
+                              <Text
+                                style={{
+                                  fontSize: 16,
+                                  color: isSelected ? '#FFFFFF' : '#0288D1',
+                                }}>
+                                ⚓
+                              </Text>
+                            </View>
+                            <View style={styles.bandarNameCol}>
+                              <View style={styles.bandarTitleRow}>
+                                <Text
+                                  style={[
+                                    styles.bandarNameMain,
+                                    {
+                                      color: isSelected
+                                        ? '#0288D1'
+                                        : colors.textPrimary,
+                                      fontWeight: isSelected ? '900' : '700',
+                                    },
+                                  ]}>
+                                  {item.nameGu}
+                                </Text>
+                                {isClosest && (
+                                  <View style={styles.closestTag}>
+                                    <Text style={styles.closestTagText}>
+                                      સૌથી નજીક / NEAREST
+                                    </Text>
+                                  </View>
+                                )}
+                              </View>
+                              <Text
+                                style={[
+                                  styles.bandarNameEn,
+                                  {
+                                    color: isNight ? '#8B949E' : '#64748B',
+                                  },
+                                ]}>
+                                {item.name} • {item.regionGu || item.region}
+                              </Text>
+                            </View>
+                          </View>
+
+                          <View style={styles.bandarItemRight}>
+                            {item.distanceKm !== null && (
+                              <View
+                                style={[
+                                  styles.distancePill,
+                                  isClosest && styles.distancePillClosest,
+                                ]}>
+                                <Text
+                                  style={[
+                                    styles.distanceNumber,
+                                    isClosest && styles.distanceNumberClosest,
+                                  ]}>
+                                  {item.distanceKm < 1
+                                    ? `${Math.round(item.distanceKm * 1000)}m`
+                                    : `${item.distanceKm.toFixed(1)} km`}
+                                </Text>
+                              </View>
+                            )}
+                            {isSelected && (
+                              <View style={styles.activeCheckPill}>
+                                <Text style={styles.activeCheckText}>✓ સક્રિય</Text>
+                              </View>
+                            )}
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })
+                  )}
+                </ScrollView>
               </View>
             </TouchableWithoutFeedback>
           </View>
@@ -1483,7 +1731,7 @@ export default function CalendarScreen() {
       {/* LANGUAGE SELECTOR MODAL */}
       <Modal visible={showLangPicker} transparent animationType="fade">
         <TouchableWithoutFeedback onPress={() => setShowLangPicker(false)}>
-          <View style={styles.modalBackdrop}>
+          <View style={styles.centerModalBackdrop}>
             <TouchableWithoutFeedback>
               <View style={[styles.langPickerCard, { backgroundColor: colors.cardBg }]}>
                 <Text style={[styles.langPickerTitle, { color: colors.textPrimary }]}>
@@ -1598,65 +1846,7 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
     gap: 14,
   },
-  portBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderRadius: 16,
-    borderWidth: 1,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  portBannerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    flex: 1,
-  },
-  portIconBubble: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: '#0288D1',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  portIconText: {
-    fontSize: 18,
-  },
-  portBannerInfo: {
-    flex: 1,
-    gap: 2,
-  },
-  portLabelText: {
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-  },
-  portNameText: {
-    fontSize: 15,
-    fontWeight: '900',
-  },
-  portCoordsText: {
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  changePortBadge: {
-    backgroundColor: '#0288D1',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 10,
-  },
-  changePortText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '800',
-  },
+
   calendarCard: {
     borderRadius: 18,
     borderWidth: 1,
@@ -1669,7 +1859,44 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   calendarMonthHeader: {
-    gap: 4,
+    gap: 6,
+  },
+  monthNavRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+  },
+  monthNavBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  monthNavArrow: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  monthTitleCenter: {
+    alignItems: 'center',
+    flex: 1,
+    gap: 3,
+  },
+  jumpTodayBtn: {
+    alignSelf: 'center',
+    marginTop: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0, 229, 255, 0.12)',
+    borderWidth: 1,
+    borderColor: '#00E5FF',
+  },
+  jumpTodayText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#00E5FF',
   },
   monthTitleRow: {
     flexDirection: 'row',
@@ -2213,88 +2440,221 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
   },
+  /* Port Selector Button Styles (Matching Home Screen) */
+  portSelectBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    borderWidth: 1.2,
+    marginBottom: 12,
+  },
+  portSelectIcon: {
+    fontSize: 20,
+  },
+  portSelectTextGroup: {
+    flex: 1,
+    gap: 2,
+  },
+  portSelectTitle: {
+    fontSize: 14.5,
+    fontWeight: '900',
+    letterSpacing: 0.2,
+  },
+  portSelectSubtitle: {
+    fontSize: 11.5,
+    fontWeight: '600',
+    opacity: 0.85,
+  },
+  portSelectArrow: {
+    fontSize: 14,
+    fontWeight: '900',
+  },
+
+  /* Modal Backdrop Styles */
   modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.70)',
+    justifyContent: 'flex-end',
+  },
+  centerModalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.65)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 20,
   },
-  portPickerCard: {
-    width: '100%',
-    maxWidth: 420,
-    maxHeight: '80%',
-    borderRadius: 20,
-    padding: 18,
+
+  /* Bandar Selection Modal Styles (Exact Match to Home Screen) */
+  bandarModalCard: {
+    maxHeight: '82%',
+    minHeight: '55%',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+    borderWidth: 1.5,
+    borderBottomWidth: 0,
     gap: 12,
-    shadowColor: '#000',
-    shadowOpacity: 0.35,
-    shadowRadius: 12,
-    elevation: 10,
   },
-  portModalHeader: {
-    gap: 2,
+  bandarModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
     paddingBottom: 4,
   },
-  portPickerTitle: {
+  bandarModalTitle: {
     fontSize: 17,
     fontWeight: '900',
+    letterSpacing: 0.3,
   },
-  portPickerSub: {
-    fontSize: 12,
-    fontWeight: '500',
+  bandarModalSubtitle: {
+    fontSize: 11.5,
+    fontWeight: '700',
+    marginTop: 2,
   },
-  portListScroll: {
-    maxHeight: 340,
+  modalCloseBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 8,
   },
-  portListItem: {
+  modalCloseText: {
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  bandarSearchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1.2,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    height: 42,
+    gap: 8,
+  },
+  searchIconText: {
+    fontSize: 14,
+  },
+  bandarSearchInput: {
+    flex: 1,
+    fontSize: 13.5,
+    fontWeight: '600',
+    paddingVertical: 0,
+  },
+  searchClearBtn: {
+    padding: 4,
+  },
+  searchClearText: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  bandarScrollView: {
+    flex: 1,
+  },
+  bandarScrollContent: {
+    gap: 8,
+    paddingBottom: 16,
+  },
+  emptyPortView: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 40,
+    gap: 8,
+  },
+  emptyPortText: {
+    fontSize: 13.5,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  bandarItemCard: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    marginBottom: 4,
+    padding: 11,
+    borderRadius: 14,
   },
-  portListItemLeft: {
+  bandarItemLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
     flex: 1,
   },
-  portListEmoji: {
-    fontSize: 20,
+  bandarIconCircle: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  portListDetails: {
+  bandarNameCol: {
     flex: 1,
-    gap: 1,
+    gap: 2,
   },
-  portListName: {
+  bandarTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexWrap: 'wrap',
+  },
+  bandarNameMain: {
     fontSize: 14,
-    fontWeight: '800',
   },
-  portListCoords: {
-    fontSize: 11,
-    fontWeight: '600',
+  closestTag: {
+    backgroundColor: '#00E676',
+    borderRadius: 6,
+    paddingHorizontal: 5,
+    paddingVertical: 1.5,
   },
-  portListTide: {
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  portCheckmark: {
-    fontSize: 18,
+  closestTagText: {
+    color: '#000000',
+    fontSize: 9,
     fontWeight: '900',
+    letterSpacing: 0.3,
+  },
+  bandarNameEn: {
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  bandarItemRight: {
+    alignItems: 'flex-end',
+    gap: 4,
     marginLeft: 8,
   },
-  modalCloseBtn: {
-    paddingVertical: 12,
-    borderRadius: 12,
-    alignItems: 'center',
-    marginTop: 4,
+  distancePill: {
+    backgroundColor: 'rgba(2, 136, 209, 0.12)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(2, 136, 209, 0.3)',
   },
-  modalCloseText: {
-    fontSize: 14,
-    fontWeight: '800',
+  distancePillClosest: {
+    backgroundColor: 'rgba(0, 230, 118, 0.15)',
+    borderColor: '#00E676',
+  },
+  distanceNumber: {
+    color: '#0288D1',
+    fontSize: 11.5,
+    fontWeight: '900',
+  },
+  distanceNumberClosest: {
+    color: '#00E676',
+  },
+  activeCheckPill: {
+    backgroundColor: '#0288D1',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  activeCheckText: {
+    color: '#FFFFFF',
+    fontSize: 9.5,
+    fontWeight: '900',
   },
   langPickerCard: {
     width: '100%',

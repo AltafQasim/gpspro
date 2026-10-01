@@ -4,7 +4,7 @@ import {
   MARINE_PORTS_DATABASE,
   MarinePortInfo,
 } from '@/services/marineData';
-import { SettingsStore } from '@/services/settingsStore';
+import { SettingsStore, SpeechLanguage } from '@/services/settingsStore';
 import { VoiceService } from '@/services/voiceService';
 import { getMoonPhaseDetails, getSunTimingDetails } from '@/utils/astronomy';
 import { useRouter } from 'expo-router';
@@ -274,19 +274,26 @@ export default function TideScreen() {
   // App Theme & Night Mode Subscription
   const [isNight, setIsNight] = useState<boolean>(() => SettingsStore.isNightMode());
   const [selectedPortId, setSelectedPortId] = useState<string>(() => SettingsStore.getSelectedPortId());
+  const [selectedLang, setSelectedLang] = useState<SpeechLanguage>(() => SettingsStore.getSettings().ttsLang || 'Gujarati');
+  const [voiceEnabled, setVoiceEnabled] = useState<boolean>(() => SettingsStore.getSettings().voiceAnnounce);
 
   useEffect(() => {
     const unsub = SettingsStore.subscribe((s) => {
       setIsNight(SettingsStore.isNightMode());
+      if (s.ttsLang && s.ttsLang !== selectedLang) {
+        setSelectedLang(s.ttsLang);
+      }
+      if (s.voiceAnnounce !== undefined && s.voiceAnnounce !== voiceEnabled) {
+        setVoiceEnabled(s.voiceAnnounce);
+      }
       if (s.selectedPortId && s.selectedPortId !== selectedPortId) {
         setSelectedPortId(s.selectedPortId);
       }
     });
     return unsub;
-  }, [selectedPortId]);
+  }, [selectedPortId, selectedLang, voiceEnabled]);
 
-  // State: Default language is Gujarati, Default date is today's real local date
-  const [selectedLang, setSelectedLang] = useState<'Gujarati' | 'Hindi' | 'English'>('Gujarati');
+  // State: Default date is today's real local date
   const [selectedDate, setSelectedDate] = useState<string>(getTodayDateStr);
   const [showPortModal, setShowPortModal] = useState<boolean>(false);
   const [showLangModal, setShowLangModal] = useState<boolean>(false);
@@ -308,6 +315,9 @@ export default function TideScreen() {
         setCurrentGps({ latitude: loc.latitude, longitude: loc.longitude });
       }
     });
+    return () => {
+      VoiceService.stop();
+    };
   }, []);
 
   // Filtered & Distance-Sorted Ports List for the Modal Dropdown
@@ -746,24 +756,39 @@ export default function TideScreen() {
           <Text style={[styles.screenTitle, { color: colors.textPrimary }]}>{t.screenTitle}</Text>
         </View>
 
-        {/* Header Right: Language Switcher Dropdown (in place of removed LIVE badge) & Voice Speaker */}
-        <View style={styles.headerRightGroup}>
+        {/* Right Controls: Voice Toggle & Language Pill (Matches Calendar Screen Status Bar) */}
+        <View style={styles.headerRightControls}>
           <TouchableOpacity
-            activeOpacity={0.75}
-            onPress={() => setShowLangModal(true)}
-            style={[styles.headerLangBtn, { backgroundColor: colors.pillBg, borderColor: colors.cardBorder }]}>
-            <Text style={styles.headerLangEmoji}>🌐</Text>
-            <Text style={[styles.headerLangText, { color: colors.textPrimary }]}>
-              {selectedLang === 'Gujarati' ? 'ગુજરાતી' : selectedLang === 'Hindi' ? 'हिंदी' : 'EN'}
-            </Text>
-            <Text style={[styles.headerLangArrow, { color: colors.accentBlue }]}>▾</Text>
+            activeOpacity={0.7}
+            onPress={() => {
+              if (isSpeaking) {
+                VoiceService.stop();
+                setIsSpeaking(false);
+                setVoiceEnabled(false);
+                SettingsStore.updateSettings({ voiceAnnounce: false });
+                return;
+              }
+              const next = !voiceEnabled;
+              setVoiceEnabled(next);
+              SettingsStore.updateSettings({ voiceAnnounce: next });
+              if (next) {
+                handleToggleVoiceAnnouncement();
+              } else {
+                VoiceService.stop();
+                setIsSpeaking(false);
+              }
+            }}
+            style={[styles.headerVoiceBtn, { backgroundColor: colors.pillBg }]}>
+            <Text style={styles.headerVoiceIcon}>{voiceEnabled ? '🔊' : '🔇'}</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             activeOpacity={0.7}
-            onPress={handleToggleVoiceAnnouncement}
-            style={[styles.headerVoiceBtn, isSpeaking && styles.headerVoiceBtnActive, { backgroundColor: colors.pillBg }]}>
-            <Text style={styles.headerVoiceIcon}>{isSpeaking ? '⏹️' : '🔊'}</Text>
+            onPress={() => setShowLangModal(true)}
+            style={[styles.headerLangBtn, { backgroundColor: colors.pillBg }]}>
+            <Text style={[styles.headerLangText, { color: colors.accentBlue }]}>
+              {selectedLang === 'Gujarati' ? 'ગુજ' : selectedLang === 'Hindi' ? 'हिं' : 'EN'}
+            </Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -1632,45 +1657,60 @@ export default function TideScreen() {
         </TouchableWithoutFeedback>
       </Modal>
 
-      {/* LANGUAGE SELECTOR MODAL */}
+      {/* LANGUAGE SELECTOR MODAL (Matches Calendar Screen) */}
       <Modal visible={showLangModal} transparent animationType="fade">
         <TouchableWithoutFeedback onPress={() => setShowLangModal(false)}>
           <View style={styles.modalBackdrop}>
-            <View style={[styles.pickerCard, { backgroundColor: colors.cardBg }]}>
-              <Text style={[styles.pickerTitle, { color: colors.textPrimary }]}>🌐 Select Voice Language</Text>
-              {(
-                [
-                  { key: 'Gujarati', title: 'ગુજરાતી (Gujarati - Default)', badge: 'Default' },
-                  { key: 'Hindi', title: 'हिंदी (Hindi)', badge: '' },
-                  { key: 'English', title: 'English', badge: '' },
-                ] as const
-              ).map((lang) => (
-                <TouchableOpacity
-                  key={lang.key}
-                  onPress={() => {
-                    setSelectedLang(lang.key);
-                    VoiceService.setLanguage(lang.key);
-                    setShowLangModal(false);
-                  }}
-                  style={[
-                    styles.pickerOption,
-                    { backgroundColor: colors.pillBg },
-                    selectedLang === lang.key && styles.pickerOptionSelected,
-                  ]}>
-                  <View style={styles.pickerOptionRow}>
-                    <Text
-                      style={[
-                        styles.pickerOptionText,
-                        { color: colors.textPrimary },
-                        selectedLang === lang.key && styles.pickerOptionTextSelected,
-                      ]}>
-                      {lang.title}
-                    </Text>
-                    {selectedLang === lang.key && <Text style={{ color: '#0288D1', fontWeight: '900' }}>✓</Text>}
-                  </View>
-                </TouchableOpacity>
-              ))}
-            </View>
+            <TouchableWithoutFeedback>
+              <View style={[styles.pickerCard, { backgroundColor: colors.cardBg }]}>
+                <Text style={[styles.pickerTitle, { color: colors.textPrimary }]}>🌐 Select Voice Language</Text>
+                {(
+                  [
+                    { key: 'Gujarati', title: 'ગુજરાતી (Gujarati)' },
+                    { key: 'Hindi', title: 'हिंदी (Hindi)' },
+                    { key: 'English', title: 'English' },
+                  ] as const
+                ).map((lang) => (
+                  <TouchableOpacity
+                    key={lang.key}
+                    activeOpacity={0.7}
+                    onPress={() => {
+                      setSelectedLang(lang.key);
+                      SettingsStore.updateSettings({ ttsLang: lang.key });
+                      VoiceService.setLanguage(lang.key);
+                      setShowLangModal(false);
+                      if (voiceEnabled) {
+                        VoiceService.speak(
+                          lang.key === 'Gujarati'
+                            ? 'ગુજરાતી અવાજ સક્રિય કર્યો'
+                            : lang.key === 'Hindi'
+                              ? 'हिंदी आवाज़ सक्रिय की गई'
+                              : 'English voice activated',
+                          lang.key
+                        );
+                      }
+                    }}
+                    style={[
+                      styles.pickerOption,
+                      { backgroundColor: colors.pillBg },
+                      selectedLang === lang.key && styles.pickerOptionSelected,
+                    ]}>
+                    <View style={styles.pickerOptionRow}>
+                      <Text
+                        style={[
+                          styles.pickerOptionText,
+                          { color: selectedLang === lang.key ? colors.accentBlue : colors.textPrimary },
+                        ]}>
+                        {lang.title}
+                      </Text>
+                      {selectedLang === lang.key && (
+                        <Text style={{ color: colors.accentBlue, fontWeight: '900' }}>✓</Text>
+                      )}
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </TouchableWithoutFeedback>
           </View>
         </TouchableWithoutFeedback>
       </Modal>
@@ -1727,7 +1767,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 12,
+    paddingHorizontal: 16,
     paddingVertical: 10,
     borderBottomWidth: 1,
   },
@@ -1743,40 +1783,30 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
     textAlign: 'center',
   },
-  headerRightGroup: {
+  headerRightControls: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
   },
   headerVoiceBtn: {
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: 14,
-  },
-  headerVoiceBtnActive: {
-    backgroundColor: '#00E676',
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   headerVoiceIcon: {
-    fontSize: 15,
+    fontSize: 16,
   },
   headerLangBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 9,
-    paddingVertical: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     borderRadius: 14,
-    borderWidth: 1,
-  },
-  headerLangEmoji: {
-    fontSize: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   headerLangText: {
-    fontSize: 11.5,
-    fontWeight: '800',
-  },
-  headerLangArrow: {
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: '900',
   },
   scrollContent: {

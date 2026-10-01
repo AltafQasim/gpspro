@@ -47,10 +47,86 @@ class MarineVoiceService {
 
   public setEnabled(val: boolean) {
     this.isEnabled = val;
+    if (!val) {
+      this.stop();
+    }
   }
 
   public getEnabled(): boolean {
     return this.isEnabled;
+  }
+
+  /**
+   * Immediately terminates all ongoing speech synthesis and audio across the app.
+   */
+  public stop() {
+    try {
+      if (ExpoSpeech && typeof ExpoSpeech.stop === 'function') {
+        ExpoSpeech.stop();
+      }
+    } catch {
+      // Silently ignore native stop failure
+    }
+
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {
+        // Silently ignore web cancel failure
+      }
+    }
+
+    this.notify('');
+  }
+
+  /**
+   * Plays a dual-tone marine sonar beep (1046Hz & 1318Hz) to signal target arrival.
+   */
+  public playArrivalBeep() {
+    if (typeof window !== 'undefined') {
+      try {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioCtx) {
+          const ctx = new AudioCtx();
+          if (ctx.state === 'suspended') {
+            ctx.resume();
+          }
+          const playTone = (freq: number, startDelay: number, duration: number) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(freq, ctx.currentTime + startDelay);
+            gain.gain.setValueAtTime(0.35, ctx.currentTime + startDelay);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + startDelay + duration);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start(ctx.currentTime + startDelay);
+            osc.stop(ctx.currentTime + startDelay + duration);
+          };
+          // High-pitch dual marine sonar arrival chime
+          playTone(1046, 0, 0.18);
+          playTone(1318, 0.22, 0.32);
+        }
+      } catch {
+        // AudioContext browser policy
+      }
+    }
+  }
+
+  /**
+   * Speaks target arrival message in the active language.
+   */
+  public announceTargetArrival(name: string, langOverride?: 'English' | 'Hindi' | 'Gujarati') {
+    if (!this.isEnabled) return;
+    const activeLang = langOverride || this.language;
+    const msg =
+      activeLang === 'Gujarati'
+        ? `લક્ષ્ય આવી ગયું છે! તમે ${name} પર પહોંચી ગયા છો.`
+        : activeLang === 'Hindi'
+          ? `लक्ष्य आ गया है! आप ${name} पर पहुँच गए हैं।`
+          : `Target reached! You have arrived at ${name}.`;
+
+    this.speak(msg, activeLang);
   }
 
   public setLanguage(lang: 'English' | 'Hindi' | 'Gujarati') {
@@ -128,6 +204,9 @@ class MarineVoiceService {
       | {
         day: number;
         monthEn?: string;
+        monthGu?: string;
+        monthHi?: string;
+        year?: number;
         tithiName: string;
         tithiNameGu?: string;
         tithiNameHi?: string;
@@ -151,22 +230,38 @@ class MarineVoiceService {
       const activeLang = dateOrOptions.lang || langOverride || this.language;
       const day = dateOrOptions.day;
       const ill = dateOrOptions.illumination;
+      const now = new Date();
+      const currentYear = dateOrOptions.year || now.getFullYear();
+
+      // Gujarati / Hindi numeral conversion
+      const toGuDigits = (n: number | string) => {
+        const gu = ['૦', '૧', '૨', '૩', '૪', '૫', '૬', '૭', '૮', '૯'];
+        return String(n).replace(/[0-9]/g, (d) => gu[parseInt(d, 10)]);
+      };
+      const toHiDigits = (n: number | string) => {
+        const hi = ['०', '१', '२', '३', '४', '५', '६', '७', '८', '९'];
+        return String(n).replace(/[0-9]/g, (d) => hi[parseInt(d, 10)]);
+      };
+
+      const mGu = dateOrOptions.monthGu || 'ઓક્ટોબર';
+      const mHi = dateOrOptions.monthHi || 'अक्टूबर';
+      const mEn = dateOrOptions.monthEn || 'October';
 
       let msg = '';
       if (activeLang === 'Gujarati') {
         const port = dateOrOptions.portNameGu || dateOrOptions.portNameEn || '';
         const tithiGu = dateOrOptions.tithiNameGu || dateOrOptions.tithiName;
         const tideText = dateOrOptions.tideTitleGu || dateOrOptions.tideTitleEn || '';
-        msg = `${day} સપ્ટેમ્બર ૨૦૨૬, તિથિ ${tithiGu}. ચંદ્ર ${ill} ટકા તેજસ્વી. ${port ? `${port}: ` : ''}${tideText}.`;
+        msg = `${toGuDigits(day)} ${mGu} ${toGuDigits(currentYear)}, તિથિ ${tithiGu}. ચંદ્ર ${toGuDigits(ill)} ટકા તેજસ્વી. ${port ? `${port}: ` : ''}${tideText}.`;
       } else if (activeLang === 'Hindi') {
         const port = dateOrOptions.portNameHi || dateOrOptions.portNameEn || '';
         const tithiHi = dateOrOptions.tithiNameHi || dateOrOptions.tithiName;
         const tideText = dateOrOptions.tideTitleHi || dateOrOptions.tideTitleEn || '';
-        msg = `${day} सितम्बर २०२६, तिथि ${tithiHi}। चाँद ${ill} प्रतिशत रोशन। ${port ? `${port}: ` : ''}${tideText}।`;
+        msg = `${toHiDigits(day)} ${mHi} ${toHiDigits(currentYear)}, तिथि ${tithiHi}। चाँद ${toHiDigits(ill)} प्रतिशत रोशन। ${port ? `${port}: ` : ''}${tideText}।`;
       } else {
         const port = dateOrOptions.portNameEn || '';
         const tideText = dateOrOptions.tideTitleEn || '';
-        msg = `${day} September 2026, Tithi ${dateOrOptions.tithiName}. Moon is ${ill}% illuminated. ${port ? `${port}: ` : ''}${tideText}.`;
+        msg = `${day} ${mEn} ${currentYear}, Tithi ${dateOrOptions.tithiName}. Moon is ${ill}% illuminated. ${port ? `${port}: ` : ''}${tideText}.`;
       }
 
       this.speak(msg, activeLang);

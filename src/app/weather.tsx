@@ -39,16 +39,6 @@ export default function SeaWeatherScreen() {
 
   // Theme & Night Mode Subscription
   const [isNight, setIsNight] = useState<boolean>(() => SettingsStore.isNightMode());
-  useEffect(() => {
-    const unsub = SettingsStore.subscribe((s) => {
-      setIsNight(SettingsStore.isNightMode());
-      if (s.selectedPortId && s.selectedPortId !== selectedPortId) {
-        setSelectedPortId(s.selectedPortId);
-      }
-    });
-    return unsub;
-  }, [selectedPortId]);
-
   // Selected Port (Synchronized globally via SettingsStore)
   const [selectedPortId, setSelectedPortId] = useState<string>(() => SettingsStore.getSelectedPortId());
   const [showPortModal, setShowPortModal] = useState<boolean>(false);
@@ -61,6 +51,16 @@ export default function SeaWeatherScreen() {
   const [portSearchText, setPortSearchText] = useState<string>('');
 
   useEffect(() => {
+    const unsub = SettingsStore.subscribe((s) => {
+      setIsNight(SettingsStore.isNightMode());
+      if (s.selectedPortId && s.selectedPortId !== selectedPortId) {
+        setSelectedPortId(s.selectedPortId);
+      }
+    });
+    return unsub;
+  }, [selectedPortId]);
+
+  useEffect(() => {
     const cached = GpsService.getLastTelemetry();
     if (cached) {
       setCurrentGps({ latitude: cached.latitude, longitude: cached.longitude });
@@ -70,6 +70,9 @@ export default function SeaWeatherScreen() {
         setCurrentGps({ latitude: loc.latitude, longitude: loc.longitude });
       }
     });
+    return () => {
+      VoiceService.stop();
+    };
   }, []);
 
   // Filtered & Distance-Sorted Ports List for the Modal Dropdown
